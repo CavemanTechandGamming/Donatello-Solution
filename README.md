@@ -5,30 +5,28 @@
 [![Python 3.14](https://img.shields.io/badge/python-3.14-blue.svg)](https://www.python.org/downloads/)
 [![Platform](https://img.shields.io/badge/platform-Windows%20%7C%20macOS%20%7C%20Linux-lightgrey.svg)](https://github.com/CavemanTechandGamming/Donatello-Solution/releases)
 
-Premiere-inspired timeline editor for **MKV only** — cut and assemble MKV the way you’d edit MP4 in a traditional NLE. Powered by FFmpeg.
+Premiere-inspired timeline editor for **MKV only** — cut, assemble, and export with FFmpeg.
 
-*(Screenshots will land under `docs/images/` once the UI exists.)*
+*(Main-window screenshot will go here once captured — `docs/images/main-window.png`.)*
 
 ---
 
-## Features (v1 target)
+## Features
 
-- Timeline cut (remove sections) and insert footage
-- **Default cut = all streams** (video + every audio + every subtitle); **Ctrl+cut = selected track only**
-- Softsubs stay lined up through edits and splits (unless Ctrl single-stream edit)
-- H.264 and H.265 / HEVC (including **HEVC 10-bit + AC3**, the primary library target)
-- Preserve audio channel layouts: **stereo · 2.1 · 5.1 · 7.1** (no surprise downmix by default)
-- Preview large MKV rips; drop **named markers** while watching (become chapters on Export)
-- **Drag-and-drop** (required) plus browse/dialog import
-- **Left project panel** — media imported into this workspace (Premiere-style)
-- **Settings** — default workspace save folder + default export folder; **Open log file** for diagnostics
-- **Track edit** (like [[Subtitle Muxer]]): title + language by name on **video · audio · subtitle**; Default/Forced on subs
-- **Save / Open** = workspace (project state comes back intact)
-- **Export** (NLE wording) = produce MKV(s):
-  - **Single file** — one MKV (timeline and/or markers as chapters)
-  - **Multiple files** — named ranges → separate MKVs
-- Long-term: full **MKV-dedicated** all-in-one editor; v1 is the locked slice above
-- FFmpeg-backed processing (bundled for normal use when packaging lands)
+- **Project panel** — import MKVs by browse or drag-and-drop; click to load on the timeline
+- **In-app preview** — Play / Pause / Stop, scrub, ±1 frame, ±skip seconds (PyAV; HEVC 10-bit + AC3 and friends)
+- **Preview monitor audio** — Settings for output device, sample rate, and downmix (Stereo / Mono / Keep channels); Export never downmixes
+- **Mark In / Out** — Cut removes that range (all streams by default; selected-track cut available); Export with marks set keeps that span
+- **Insert** — insert another MKV at In or playhead (all streams or selected video/audio)
+- **Track edit** — title and language on video / audio / subtitle; Default / Forced on subs; written on Export
+- **Named markers** — become chapters in the exported MKV
+- **Workspace save / open** — `.donatello` restores the bin, active clip, marks, playhead, selection, track edits, and markers
+- **Export (single MKV)** — remux with track metadata and chapters; prefers stream copy when possible
+- **Settings** — default workspace and export folders; open the diagnostic log
+- Dark CustomTkinter chrome with a themed menu bar and themed dialogs
+- Softsubs stay lined up through cuts and inserts
+- Audio channel layouts preserved on Export: **stereo · 2.1 · 5.1 · 7.1**
+- FFmpeg via `static-ffmpeg` for normal use — no separate install required when developing
 
 ---
 
@@ -37,15 +35,34 @@ Premiere-inspired timeline editor for **MKV only** — cut and assemble MKV the 
 Releases are not published yet (alpha `0.0.1`). When they exist:
 
 1. Open this repository’s **[Releases](https://github.com/CavemanTechandGamming/Donatello-Solution/releases)** page.
-2. Download the build for your OS and run **Donatello Solution**.
+2. Download the file for your OS:
+   - **Windows portable** — `…-windows-portable.zip` (extract and run the `.exe`)
+   - **Windows installer** — `…-windows-setup.exe` (run the Setup wizard)
+   - **Mac** — `…-mac-apple-silicon.tar.gz` or `…-mac-intel.tar.gz`
+   - **Linux** — `…-<distro>.tar.gz` (e.g. `…-ubuntu.tar.gz`)
+3. Extract if needed, then run **Donatello Solution**.
+
+Until then, run from source (see [CONTRIBUTING.md](CONTRIBUTING.md)).
 
 ---
 
-## How to use (dev)
+## How to use
 
-1. Create a venv and install `requirements/requirements.txt`.
-2. From the repo root: `python -m src`
-3. **File → Import…** or drop MKVs; click to load. **Preview** Play/scrub. **Add marker** for chapters. **Edit** stream title/language. **Settings** for default folders + log file. **Save Workspace** / **Open Workspace** for project round-trip. **Export** remuxes with metadata (+ chapters from markers). See `LOCAL_NOTES.md` for remaining work.
+1. **Import** MKVs into the Project panel (browse or drag-and-drop), then click a clip to load it on the timeline.
+2. **Preview** with Play / scrub; set **Mark In** and **Mark Out** when you need a work area.
+3. **Cut** to remove a range, or **Insert** another clip at In / the playhead. Edit track titles and languages as needed.
+4. Drop **named markers** while watching — they become chapters on Export.
+5. **Save Workspace** to keep project state, or **Export** a single MKV (with marks set, Export keeps that span; Cut still removes it).
+
+**Save** = workspace only. **Export** = produce an MKV.
+
+---
+
+## Tips
+
+- Use **Keep channels** in Settings → Audio when you want the preview monitor to leave 5.1 / 7.1 alone (falls back to stereo if the device can’t open that many channels).
+- Open the log from Settings → Help if something fails — details live under `%APPDATA%\DonatelloSolution\donatello.log` on Windows.
+- Multi-track timeline lanes and multi-file Export from marker ranges are still ahead; single-file Export and the current timeline strip are the stopgap.
 
 ---
 
@@ -57,10 +74,4 @@ MIT — see [LICENSE](LICENSE).
 
 ## Contributing
 
-See [CONTRIBUTING.md](CONTRIBUTING.md).
-
----
-
-## Changelog
-
-See [CHANGELOG.md](CHANGELOG.md).
+Want to build from source or send a pull request? See [CONTRIBUTING.md](CONTRIBUTING.md).

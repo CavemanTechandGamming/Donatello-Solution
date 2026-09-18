@@ -3,6 +3,8 @@ In-app preview: PyAV decode (HEVC 10-bit + AC3 OK) + sounddevice audio.
 
 Video/audio run on a worker thread; the UI only drains a frame queue so Tk
 never blocks on decode.
+
+Preview monitor: sample rate + stereo/mono downmix from Settings (Export unchanged).
 """
 
 from __future__ import annotations
@@ -17,7 +19,12 @@ from pathlib import Path
 import av
 import numpy as np
 import sounddevice as sd
+from av.audio.resampler import AudioResampler
 from PIL import Image
+
+from src.core import settings as app_settings
+
+_AUDIO_Q_SIZE = 256
 
 
 @dataclass(frozen=True)
@@ -57,9 +64,11 @@ class PreviewPlayer:
 
         self._frame_queue: queue.Queue[PreviewFrame | None] = queue.Queue(maxsize=4)
         self._audio_stream: sd.OutputStream | None = None
-        self._audio_q: queue.Queue[np.ndarray | None] = queue.Queue(maxsize=64)
-        self._sample_rate = 48000
+        self._audio_q: queue.Queue[np.ndarray | None] = queue.Queue(maxsize=_AUDIO_Q_SIZE)
+        self._sample_rate = app_settings.DEFAULT_PREVIEW_SAMPLE_RATE
         self._channels = 2
+        self._audio_remainder: np.ndarray | None = None
+        self._monitor_layout = "stereo"
 
     @property
     def path(self) -> Path | None:
@@ -109,14 +118,11 @@ class PreviewPlayer:
                                 self._frame_duration = 1.0 / fps
                         except (TypeError, ValueError, ZeroDivisionError):
                             pass
-                if container.streams.audio:
-                    ctx = container.streams.audio[0].codec_context
-                    if ctx.sample_rate:
-                        self._sample_rate = int(ctx.sample_rate)
-                    self._channels = 2
         except Exception as exc:  # noqa: BLE001
             self._emit_error(f"Could not open preview: {exc}")
             return
+        self._sample_rate = app_settings.get_preview_sample_rate()
+        self._monitor_layout, self._channels = app_settings.preview_monitor_layout()
         self.show_frame_at(0.0)
 
     def close(self) -> None:
@@ -168,9 +174,87 @@ class PreviewPlayer:
         self._stop.clear()
         self._drain_frame_queue()
         self._drain_audio_queue()
+        self._configure_monitor_from_source()
         self._start_audio_stream()
         self._thread = threading.Thread(target=self._playback_loop, name="donatello-preview", daemon=True)
         self._thread.start()
+
+    def _configure_monitor_from_source(self) -> None:
+        """Set sample rate / layout / channels from Settings (+ file, if Keep channels)."""
+        rate = app_settings.get_preview_sample_rate()
+        source_layout: str | None = None
+        source_channels: int | None = None
+        if (
+            app_settings.get_preview_downmix() == app_settings.PREVIEW_DOWNMIX_KEEP
+            and self._path is not None
+        ):
+            try:
+                with av.open(str(self._path)) as container:
+                    if container.streams.audio:
+                        audio = container.streams.audio[0]
+                        if audio.layout is not None:
+                            source_layout = audio.layout.name
+                            source_channels = int(audio.layout.nb_channels)
+                        else:
+                            ctx = audio.codec_context
+                            ch = getattr(ctx, "channels", None) or getattr(
+                                ctx, "ch_layout", None
+                            )
+                            if isinstance(ch, int) and ch > 0:
+                                source_channels = ch
+            except Exception:
+                source_layout = None
+                source_channels = None
+        layout, channels = app_settings.preview_monitor_layout(
+            source_layout=source_layout,
+            source_channels=source_channels,
+        )
+        self._sample_rate = rate
+        self._monitor_layout = layout
+        self._channels = max(1, int(channels))
+
+    def _start_audio_stream(self) -> None:
+        self._stop_audio_stream()
+        device = app_settings.resolve_preview_audio_device()
+        try:
+            self._audio_stream = sd.OutputStream(
+                samplerate=self._sample_rate,
+                channels=self._channels,
+                dtype="float32",
+                callback=self._audio_callback,
+                blocksize=2048,
+                latency="high",
+                device=device,
+            )
+            self._audio_stream.start()
+            return
+        except Exception as exc:  # noqa: BLE001
+            # Keep-channels often fails on stereo-only headphones — fall back.
+            if self._channels > 2:
+                self._emit_error(
+                    f"Preview can't open {self._channels} channels on this device "
+                    f"({exc}). Falling back to stereo."
+                )
+                self._channels = 2
+                self._monitor_layout = "stereo"
+                try:
+                    self._audio_stream = sd.OutputStream(
+                        samplerate=self._sample_rate,
+                        channels=2,
+                        dtype="float32",
+                        callback=self._audio_callback,
+                        blocksize=2048,
+                        latency="high",
+                        device=device,
+                    )
+                    self._audio_stream.start()
+                    return
+                except Exception as exc2:  # noqa: BLE001
+                    self._audio_stream = None
+                    self._emit_error(f"Audio preview unavailable: {exc2}")
+                    return
+            self._audio_stream = None
+            self._emit_error(f"Audio preview unavailable: {exc}")
 
     def pause(self) -> None:
         if not self._playing:
@@ -228,12 +312,17 @@ class PreviewPlayer:
                 self._audio_q.get_nowait()
             except queue.Empty:
                 break
+        self._audio_remainder = None
 
     def _audio_callback(self, outdata, frames, _time_info, status) -> None:  # noqa: ANN001
-        if status:
-            pass
         collected = np.zeros((frames, self._channels), dtype=np.float32)
         filled = 0
+        if self._audio_remainder is not None and self._audio_remainder.shape[0] > 0:
+            chunk = self._audio_remainder
+            take = min(frames, chunk.shape[0])
+            collected[:take] = chunk[:take]
+            filled = take
+            self._audio_remainder = chunk[take:] if take < chunk.shape[0] else None
         while filled < frames:
             try:
                 chunk = self._audio_q.get_nowait()
@@ -246,27 +335,9 @@ class PreviewPlayer:
             collected[filled : filled + take] = chunk[:take]
             filled += take
             if take < chunk.shape[0]:
-                # put remainder back
-                try:
-                    self._audio_q.put_nowait(chunk[take:])
-                except queue.Full:
-                    pass
+                self._audio_remainder = chunk[take:]
+                break
         outdata[:] = collected
-
-    def _start_audio_stream(self) -> None:
-        self._stop_audio_stream()
-        try:
-            self._audio_stream = sd.OutputStream(
-                samplerate=self._sample_rate,
-                channels=self._channels,
-                dtype="float32",
-                callback=self._audio_callback,
-                blocksize=1024,
-            )
-            self._audio_stream.start()
-        except Exception as exc:  # noqa: BLE001
-            self._audio_stream = None
-            self._emit_error(f"Audio preview unavailable: {exc}")
 
     def _stop_audio_stream(self) -> None:
         if self._audio_stream is not None:
@@ -322,11 +393,15 @@ class PreviewPlayer:
                     self._frame_queue.put(None)
                     return
 
+                resampler: AudioResampler | None = None
                 if audio is not None:
-                    ctx = audio.codec_context
-                    if ctx.sample_rate:
-                        self._sample_rate = int(ctx.sample_rate)
-                    self._channels = 2
+                    rate = self._sample_rate
+                    layout = self._monitor_layout
+                    resampler = AudioResampler(
+                        format="fltp",
+                        layout=layout,
+                        rate=rate,
+                    )
 
                 offset = int(max(0.0, start_pos) / video.time_base) if video.time_base else 0
                 try:
@@ -348,7 +423,12 @@ class PreviewPlayer:
                         if self._stop.is_set():
                             break
                         if isinstance(frame, av.AudioFrame):
-                            self._enqueue_audio(frame)
+                            if resampler is not None:
+                                try:
+                                    for out in resampler.resample(frame):
+                                        self._enqueue_monitor_audio(out)
+                                except Exception:
+                                    continue
                             continue
                         if not isinstance(frame, av.VideoFrame):
                             continue
@@ -384,6 +464,13 @@ class PreviewPlayer:
                             self._stop.set()
                             break
 
+                if resampler is not None and not self._stop.is_set():
+                    try:
+                        for out in resampler.resample(None):
+                            self._enqueue_monitor_audio(out)
+                    except Exception:
+                        pass
+
         except Exception as exc:  # noqa: BLE001
             self._emit_error(f"Preview playback failed: {exc}")
         finally:
@@ -393,29 +480,45 @@ class PreviewPlayer:
                 pass
             self._playing = False
 
-    def _enqueue_audio(self, frame: av.AudioFrame) -> None:
+    def _enqueue_monitor_audio(self, frame: av.AudioFrame) -> None:
+        """Queue one float frame (monitor channel count) for PortAudio."""
         try:
             arr = frame.to_ndarray()
         except Exception:
             return
+        if arr.size == 0:
+            return
         if arr.ndim == 1:
-            arr = arr.reshape(1, -1)
-        # PyAV often returns (channels, samples)
-        if arr.shape[0] <= 8 and arr.shape[0] < arr.shape[1]:
+            if self._channels == 1:
+                arr = arr.reshape(-1, 1)
+            elif arr.shape[0] % self._channels == 0:
+                arr = arr.reshape(-1, self._channels)
+            else:
+                arr = np.column_stack([arr] * self._channels)
+        elif arr.shape[0] <= 8 and arr.shape[0] < arr.shape[1]:
+            # Planar (channels, samples) → (samples, channels)
             arr = arr.T
-        if arr.dtype != np.float32:
-            arr = arr.astype(np.float32, copy=False)
-        # Match stereo monitor
-        if arr.shape[1] > 2:
-            # Simple downmix for preview only
-            arr = arr.mean(axis=1, keepdims=True).repeat(2, axis=1).astype(np.float32)
-        elif arr.shape[1] == 1:
-            arr = np.repeat(arr, 2, axis=1)
-        elif arr.shape[1] != 2:
-            pad = np.zeros((arr.shape[0], 2 - arr.shape[1]), dtype=np.float32)
+
+        if arr.shape[1] < self._channels:
+            pad = np.zeros(
+                (arr.shape[0], self._channels - arr.shape[1]), dtype=np.float32
+            )
             arr = np.concatenate([arr, pad], axis=1)
-        self._channels = 2
-        try:
-            self._audio_q.put(arr, timeout=0.2)
-        except queue.Full:
-            pass
+        elif arr.shape[1] > self._channels:
+            arr = arr[:, : self._channels]
+
+        if np.issubdtype(arr.dtype, np.integer):
+            info = np.iinfo(arr.dtype)
+            scale = float(max(abs(info.min), info.max)) or 1.0
+            arr = arr.astype(np.float32) / scale
+        else:
+            arr = np.asarray(arr, dtype=np.float32)
+        np.clip(arr, -1.0, 1.0, out=arr)
+
+        # Prefer waiting over dropping — drops caused crackle/roughness.
+        while not self._stop.is_set():
+            try:
+                self._audio_q.put(arr, timeout=0.05)
+                return
+            except queue.Full:
+                continue

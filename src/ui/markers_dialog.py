@@ -2,12 +2,11 @@
 
 from __future__ import annotations
 
-from tkinter import messagebox, simpledialog
-
 import customtkinter as ctk
 
 from src.core.markers import TimelineMarker
 from src.core.probe import format_duration
+from src.ui import dialogs
 
 
 class MarkersDialog(ctk.CTkToplevel):
@@ -33,7 +32,7 @@ class MarkersDialog(ctk.CTkToplevel):
 
         ctk.CTkLabel(
             self,
-            text="Named markers become chapters on Export.",
+            text="Markers → chapters on Export.",
             anchor="w",
             text_color=("gray40", "gray65"),
         ).pack(fill="x", padx=14, pady=(12, 6))
@@ -90,7 +89,7 @@ class MarkersDialog(ctk.CTkToplevel):
         if not (0 <= index < len(self._markers)):
             return
         current = self._markers[index]
-        name = simpledialog.askstring(
+        name = dialogs.ask_string(
             "Rename marker",
             "Chapter name:",
             initialvalue=current.name,
@@ -100,7 +99,7 @@ class MarkersDialog(ctk.CTkToplevel):
             return
         name = name.strip()
         if not name:
-            messagebox.showwarning("Rename marker", "Name cannot be empty.", parent=self)
+            dialogs.show_warning("Rename marker", "Name cannot be empty.", parent=self)
             return
         self._markers[index] = TimelineMarker(time=current.time, name=name)
         self._notify()

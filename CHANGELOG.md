@@ -22,6 +22,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Workspace save/open: `.donatello` restores project panel, active timeline clip, Mark In/Out, playhead, stream selection, track edits
 - Single Export: timeline clip remux with track metadata; named markers written as MKV chapters (Add marker / Markers…)
 - Export In/Out: when Mark In/Out are set, Export keeps that span (shorter file); Cut still removes the span
+- UI cleanup: removed path/directory header; quieter chrome; active clip / workspace name in window title
+- Preview monitor audio: resample to float @ Settings sample rate; larger buffer (no drop-on-full); soft clip
+- Settings: tabbed **Folders / Preview / Audio / Help**; Audio = output (System default follows Windows or pin a device) + sample rate + downmix Stereo / Mono / **Keep channels** (monitor only; Keep uses source layout when the device allows, else stereo fallback)
+- Themed top menu bar (File / Edit / Help) matching dark chrome; Help always last
+- Themed About dialog (Help → About) matching dark chrome instead of native messagebox
+- Themed modal dialogs for info / warning / error / string prompts (replaces native messagebox / simpledialog)
 - Fix Export failure on files with softsubs (`-disposition:s:N` instead of invalid `s:s:N`)
 - UX lock: Save/Open = workspace; Export = single or multiple MKV (markers/chapters via Export)
 - Destination vision: full MKV-dedicated all-in-one editor (grow into it)
@@ -31,8 +37,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Track edit (Muxer-style): title + language by name on **video · audio · subtitle**; Default/Forced on subs
 
 ### Changed
-
-- Renamed project from **Leonardo Solution** to **Donatello Solution** (2026-09-17) — Resolve turtle play; Leonardo is da Vinci’s first name
 
 ### Fixed
 

@@ -3,10 +3,9 @@
 from __future__ import annotations
 
 import os
-import tkinter as tk
 from dataclasses import dataclass
 from pathlib import Path
-from tkinter import filedialog, messagebox, simpledialog
+from tkinter import filedialog
 
 import customtkinter as ctk
 from tkinterdnd2 import DND_FILES, TkinterDnD
@@ -31,8 +30,12 @@ from src.core.workspace import (
     load_workspace,
     save_workspace,
 )
+from src.ui.about_dialog import open_about
+from src.ui import dialogs
 from src.ui.markers_dialog import open_markers_dialog
+from src.ui.menubar import ThemedMenuBar
 from src.ui.settings_dialog import open_settings as show_settings_dialog
+from src.ui.tooltip import tip
 from src.ui.track_edit_dialog import ask_edit_track
 
 from PIL import Image
@@ -52,7 +55,7 @@ def _show_error(title: str, message: str, *, parent=None, exc: BaseException | N
         logger.exception("%s: %s", title, message)
     else:
         logger.error("%s: %s", title, message)
-    messagebox.showerror(title, _with_log_hint(message), parent=parent)
+    dialogs.show_error(title, _with_log_hint(message), parent=parent)
 
 
 @dataclass
@@ -145,87 +148,70 @@ class DonatelloApp(ctk.CTk, TkinterDnD.DnDWrapper):
     # ── menu ────────────────────────────────────────────────────────────
 
     def _build_menu(self) -> None:
-        menubar = tk.Menu(self)
-        file_menu = tk.Menu(menubar, tearoff=0)
-        file_menu.add_command(
-            label="Import MKV…",
-            command=self.import_mkv_dialog,
-            accelerator="Ctrl+I",
+        # Native tk.Menu ignores dark theme on Windows — use themed bar instead.
+        self._menubar = ThemedMenuBar(self)
+        self._menubar.grid(row=0, column=0, columnspan=2, sticky="ew")
+
+        self._menubar.add_menu(
+            "File",
+            [
+                ("Import MKV", self.import_mkv_dialog),
+                ("Open MKV on timeline", self.open_mkv_on_timeline),
+                ("---", None),
+                ("Open Workspace", self.open_workspace_dialog),
+                ("Save Workspace", self.save_workspace),
+                ("Save Workspace As", self.save_workspace_as_dialog),
+                ("Export MKV", self.export_dialog),
+                ("---", None),
+                ("Exit", self.destroy),
+            ],
         )
-        file_menu.add_command(
-            label="Open MKV on timeline…",
-            command=self.open_mkv_on_timeline,
-            accelerator="Ctrl+O",
+        self._menubar.add_menu(
+            "Edit",
+            [
+                ("Settings", self.open_settings),
+                ("---", None),
+                ("Clear marks", self._clear_marks),
+                ("Add marker", self._add_marker_here),
+                ("Markers", self._manage_markers),
+            ],
         )
-        file_menu.add_separator()
-        file_menu.add_command(
-            label="Open Workspace…",
-            command=self.open_workspace_dialog,
-            accelerator="Ctrl+Shift+O",
+        self._menubar.add_menu(
+            "Help",
+            [
+                ("Open log file", self._open_log_from_menu),
+                ("---", None),
+                ("About Donatello", self._show_about),
+            ],
+            last=True,
         )
-        file_menu.add_command(
-            label="Save Workspace",
-            command=self.save_workspace,
-            accelerator="Ctrl+S",
-        )
-        file_menu.add_command(
-            label="Save Workspace As…",
-            command=self.save_workspace_as_dialog,
-        )
-        file_menu.add_command(
-            label="Export MKV…",
-            command=self.export_dialog,
-            accelerator="Ctrl+E",
-        )
-        file_menu.add_separator()
-        file_menu.add_command(label="Settings…", command=self.open_settings)
-        file_menu.add_separator()
-        file_menu.add_command(label="Exit", command=self.destroy)
-        menubar.add_cascade(label="File", menu=file_menu)
-        self.configure(menu=menubar)
+
         self.bind_all("<Control-i>", lambda _e: self.import_mkv_dialog())
         self.bind_all("<Control-o>", lambda _e: self.open_mkv_on_timeline())
         self.bind_all("<Control-Shift-O>", lambda _e: self.open_workspace_dialog())
         self.bind_all("<Control-s>", lambda _e: self.save_workspace())
         self.bind_all("<Control-e>", lambda _e: self.export_dialog())
+        self.bind_all("<Control-comma>", lambda _e: self.open_settings())
+
+    def _open_log_from_menu(self) -> None:
+        from src.core.logging_setup import open_log_file
+
+        try:
+            open_log_file()
+        except Exception as exc:
+            _show_error("Log file", str(exc), parent=self, exc=exc)
+
+    def _show_about(self) -> None:
+        open_about(self)
 
     # ── layout ──────────────────────────────────────────────────────────
 
     def _build_layout(self) -> None:
         self.grid_columnconfigure(0, weight=0, minsize=260)
         self.grid_columnconfigure(1, weight=1)
+        self.grid_rowconfigure(0, weight=0)
         self.grid_rowconfigure(1, weight=1)
         self.grid_rowconfigure(2, weight=0)
-
-        header = ctk.CTkFrame(self, fg_color=("gray85", "gray17"), corner_radius=0)
-        header.grid(row=0, column=0, columnspan=2, sticky="ew")
-        header.grid_columnconfigure(0, weight=1)
-
-        self._file_label = ctk.CTkLabel(
-            header,
-            text="No media on timeline",
-            anchor="w",
-            font=ctk.CTkFont(size=14, weight="bold"),
-        )
-        self._file_label.grid(row=0, column=0, sticky="ew", padx=16, pady=(12, 2))
-
-        self._meta_label = ctk.CTkLabel(
-            header,
-            text="Import or drop MKVs into the project panel, then click one to load",
-            anchor="w",
-            font=ctk.CTkFont(size=12),
-            text_color=("gray40", "gray65"),
-        )
-        self._meta_label.grid(row=1, column=0, sticky="ew", padx=16, pady=(0, 12))
-
-        btn_row = ctk.CTkFrame(header, fg_color="transparent")
-        btn_row.grid(row=0, column=1, rowspan=2, padx=16, pady=12)
-        ctk.CTkButton(btn_row, text="Import…", width=90, command=self.import_mkv_dialog).pack(
-            side="left", padx=(0, 8)
-        )
-        ctk.CTkButton(
-            btn_row, text="Open on timeline…", width=140, command=self.open_mkv_on_timeline
-        ).pack(side="left")
 
         project = ctk.CTkFrame(self, corner_radius=0, fg_color=("gray90", "gray18"), width=260)
         project.grid(row=1, column=0, sticky="nsew")
@@ -233,22 +219,19 @@ class DonatelloApp(ctk.CTk, TkinterDnD.DnDWrapper):
         project.grid_columnconfigure(0, weight=1)
         project.grid_rowconfigure(2, weight=1)
 
+        proj_top = ctk.CTkFrame(project, fg_color="transparent")
+        proj_top.grid(row=0, column=0, sticky="ew", padx=12, pady=(12, 6))
         ctk.CTkLabel(
-            project,
+            proj_top,
             text="Project",
             anchor="w",
             font=ctk.CTkFont(size=13, weight="bold"),
-        ).grid(row=0, column=0, sticky="ew", padx=12, pady=(12, 2))
-
-        self._project_hint = ctk.CTkLabel(
-            project,
-            text="Drop MKVs here · click an item to load on timeline",
-            anchor="w",
-            font=ctk.CTkFont(size=11),
-            text_color=("gray40", "gray60"),
-            wraplength=230,
+        ).pack(side="left")
+        btn_import = ctk.CTkButton(
+            proj_top, text="Import", width=90, command=self.import_mkv_dialog
         )
-        self._project_hint.grid(row=1, column=0, sticky="ew", padx=12, pady=(0, 6))
+        btn_import.pack(side="right")
+        tip(btn_import, "Import", "Add MKV files to the project panel.")
 
         self._project_list = ctk.CTkScrollableFrame(project, fg_color="transparent")
         self._project_list.grid(row=2, column=0, sticky="nsew", padx=8, pady=(0, 8))
@@ -260,7 +243,7 @@ class DonatelloApp(ctk.CTk, TkinterDnD.DnDWrapper):
         tracks_frame.grid_rowconfigure(0, weight=1)
         tracks_frame.grid_rowconfigure(1, weight=0)
 
-        # Preview (top of right column) — gets remaining height
+        # Preview (top of right column)
         preview = ctk.CTkFrame(tracks_frame, fg_color=("gray88", "gray16"), corner_radius=0)
         preview.grid(row=0, column=0, sticky="nsew")
         preview.grid_columnconfigure(0, weight=1)
@@ -276,7 +259,7 @@ class DonatelloApp(ctk.CTk, TkinterDnD.DnDWrapper):
 
         self._preview_label = ctk.CTkLabel(
             preview,
-            text="Load a clip to preview",
+            text="",
             fg_color=("gray80", "gray12"),
             corner_radius=6,
         )
@@ -284,7 +267,6 @@ class DonatelloApp(ctk.CTk, TkinterDnD.DnDWrapper):
         self._preview_label.bind("<Configure>", self._on_preview_resize)
         self._resize_job: str | None = None
 
-        # Transport + scrub (dedicated rows so video isn't crushed)
         transport = ctk.CTkFrame(preview, fg_color="transparent")
         transport.grid(row=2, column=0, sticky="ew", padx=12, pady=(2, 2))
 
@@ -292,23 +274,41 @@ class DonatelloApp(ctk.CTk, TkinterDnD.DnDWrapper):
             transport, text="<< 5s", width=64, command=lambda: self._step_seconds(-1)
         )
         self._btn_skip_back.pack(side="left", padx=(0, 4))
-        ctk.CTkButton(
+        self._tip_skip_back = tip(
+            self._btn_skip_back, "Skip back", "Jump backward by the skip amount."
+        )
+
+        self._btn_frame_back = ctk.CTkButton(
             transport, text="‹ 1f", width=52, command=lambda: self._step_frames(-1)
-        ).pack(side="left", padx=2)
+        )
+        self._btn_frame_back.pack(side="left", padx=2)
+        tip(self._btn_frame_back, "Previous frame", "Step one frame backward.")
+
         self._play_btn = ctk.CTkButton(
             transport, text="Play", width=70, command=self._toggle_play
         )
         self._play_btn.pack(side="left", padx=6)
-        ctk.CTkButton(transport, text="Stop", width=60, command=self._stop_preview).pack(
-            side="left", padx=2
+        tip(self._play_btn, "Play / Pause", "Start or pause preview playback.")
+
+        self._btn_stop = ctk.CTkButton(
+            transport, text="Stop", width=60, command=self._stop_preview
         )
-        ctk.CTkButton(
+        self._btn_stop.pack(side="left", padx=2)
+        tip(self._btn_stop, "Stop", "Stop preview and return to the start.")
+
+        self._btn_frame_fwd = ctk.CTkButton(
             transport, text="1f ›", width=52, command=lambda: self._step_frames(1)
-        ).pack(side="left", padx=2)
+        )
+        self._btn_frame_fwd.pack(side="left", padx=2)
+        tip(self._btn_frame_fwd, "Next frame", "Step one frame forward.")
+
         self._btn_skip_fwd = ctk.CTkButton(
             transport, text="5s >>", width=64, command=lambda: self._step_seconds(1)
         )
         self._btn_skip_fwd.pack(side="left", padx=(4, 8))
+        self._tip_skip_fwd = tip(
+            self._btn_skip_fwd, "Skip forward", "Jump forward by the skip amount."
+        )
 
         self._time_label = ctk.CTkLabel(
             transport,
@@ -329,7 +329,6 @@ class DonatelloApp(ctk.CTk, TkinterDnD.DnDWrapper):
         self._scrub.set(0)
         self._scrub.configure(state="disabled")
 
-        # Streams (compact strip under preview)
         streams = ctk.CTkFrame(tracks_frame, corner_radius=0, height=160)
         streams.grid(row=1, column=0, sticky="ew")
         streams.grid_propagate(False)
@@ -338,7 +337,7 @@ class DonatelloApp(ctk.CTk, TkinterDnD.DnDWrapper):
 
         ctk.CTkLabel(
             streams,
-            text="Streams — Edit title / language",
+            text="Streams",
             anchor="w",
             font=ctk.CTkFont(size=12, weight="bold"),
         ).grid(row=0, column=0, sticky="ew", padx=12, pady=(6, 2))
@@ -349,7 +348,7 @@ class DonatelloApp(ctk.CTk, TkinterDnD.DnDWrapper):
 
         self._refresh_skip_button_labels()
 
-        timeline = ctk.CTkFrame(self, fg_color=("gray80", "gray14"), corner_radius=0, height=158)
+        timeline = ctk.CTkFrame(self, fg_color=("gray80", "gray14"), corner_radius=0, height=200)
         timeline.grid(row=2, column=0, columnspan=2, sticky="ew")
         timeline.grid_columnconfigure(0, weight=1)
         timeline.grid_propagate(False)
@@ -359,11 +358,11 @@ class DonatelloApp(ctk.CTk, TkinterDnD.DnDWrapper):
             text="Timeline",
             anchor="w",
             font=ctk.CTkFont(size=13, weight="bold"),
-        ).grid(row=0, column=0, sticky="ew", padx=16, pady=(8, 2))
+        ).grid(row=0, column=0, sticky="ew", padx=16, pady=(10, 2))
 
         self._ruler_label = ctk.CTkLabel(
             timeline,
-            text="0:00                                                    —",
+            text="0:00 —",
             anchor="w",
             font=ctk.CTkFont(family="Consolas", size=11),
             text_color=("gray40", "gray60"),
@@ -371,61 +370,88 @@ class DonatelloApp(ctk.CTk, TkinterDnD.DnDWrapper):
         self._ruler_label.grid(row=1, column=0, sticky="ew", padx=16, pady=(0, 2))
 
         self._clip_bar = ctk.CTkProgressBar(timeline, height=22, corner_radius=4)
-        self._clip_bar.grid(row=2, column=0, sticky="ew", padx=16, pady=(0, 4))
+        self._clip_bar.grid(row=2, column=0, sticky="ew", padx=16, pady=(0, 6))
         self._clip_bar.set(0)
         self._clip_bar.configure(progress_color=("gray50", "gray35"))
 
         cut_row = ctk.CTkFrame(timeline, fg_color="transparent")
-        cut_row.grid(row=3, column=0, sticky="ew", padx=16, pady=(0, 2))
+        cut_row.grid(row=3, column=0, sticky="ew", padx=16, pady=(0, 4))
 
-        ctk.CTkButton(cut_row, text="Mark In", width=80, command=self._mark_in_here).pack(
-            side="left", padx=(0, 4)
+        btn_in = ctk.CTkButton(cut_row, text="Mark In", width=78, command=self._mark_in_here)
+        btn_in.pack(side="left", padx=(0, 4))
+        tip(btn_in, "Mark In", "Set the start of the range at the playhead.")
+
+        btn_out = ctk.CTkButton(
+            cut_row, text="Mark Out", width=86, command=self._mark_out_here
         )
-        ctk.CTkButton(cut_row, text="Mark Out", width=80, command=self._mark_out_here).pack(
-            side="left", padx=4
+        btn_out.pack(side="left", padx=4)
+        tip(btn_out, "Mark Out", "Set the end of the range at the playhead.")
+
+        btn_clear = ctk.CTkButton(
+            cut_row, text="Clear", width=64, command=self._clear_marks
         )
-        ctk.CTkButton(cut_row, text="Clear marks", width=100, command=self._clear_marks).pack(
-            side="left", padx=4
-        )
-        ctk.CTkButton(
+        btn_clear.pack(side="left", padx=4)
+        tip(btn_clear, "Clear marks", "Clear Mark In and Mark Out.")
+
+        btn_add_marker = ctk.CTkButton(
             cut_row, text="Add marker", width=100, command=self._add_marker_here
-        ).pack(side="left", padx=(12, 4))
-        ctk.CTkButton(
-            cut_row, text="Markers…", width=90, command=self._manage_markers
-        ).pack(side="left", padx=4)
-        ctk.CTkButton(cut_row, text="Cut", width=70, command=lambda: self._do_cut(False)).pack(
-            side="left", padx=(12, 4)
         )
-        ctk.CTkButton(
+        btn_add_marker.pack(side="left", padx=(12, 4))
+        tip(btn_add_marker, "Add marker", "Named chapter point at the playhead.")
+
+        btn_markers = ctk.CTkButton(
+            cut_row, text="Markers", width=90, command=self._manage_markers
+        )
+        btn_markers.pack(side="left", padx=4)
+        tip(btn_markers, "Markers", "List, rename, delete, or jump to markers.")
+
+        btn_cut = ctk.CTkButton(
+            cut_row, text="Cut", width=64, command=lambda: self._do_cut(False)
+        )
+        btn_cut.pack(side="left", padx=(12, 4))
+        tip(btn_cut, "Cut", "Remove the In→Out range from all streams.")
+
+        btn_cut_sel = ctk.CTkButton(
             cut_row,
             text="Cut selected",
             width=110,
             command=lambda: self._do_cut(True),
-        ).pack(side="left", padx=4)
+        )
+        btn_cut_sel.pack(side="left", padx=4)
+        tip(btn_cut_sel, "Cut selected", "Remove In→Out on the selected video/audio only.")
 
         ins_row = ctk.CTkFrame(timeline, fg_color="transparent")
-        ins_row.grid(row=4, column=0, sticky="ew", padx=16, pady=(0, 8))
+        ins_row.grid(row=4, column=0, sticky="ew", padx=16, pady=(0, 14))
 
-        ctk.CTkButton(
-            ins_row, text="Insert…", width=90, command=lambda: self._do_insert(False)
-        ).pack(side="left", padx=(0, 4))
-        ctk.CTkButton(
+        btn_ins = ctk.CTkButton(
+            ins_row, text="Insert", width=86, command=lambda: self._do_insert(False)
+        )
+        btn_ins.pack(side="left", padx=(0, 4))
+        tip(btn_ins, "Insert", "Splice another MKV in at In (or the playhead).")
+
+        btn_ins_sel = ctk.CTkButton(
             ins_row,
-            text="Insert selected…",
+            text="Insert selected",
             width=130,
             command=lambda: self._do_insert(True),
-        ).pack(side="left", padx=4)
+        )
+        btn_ins_sel.pack(side="left", padx=4)
+        tip(
+            btn_ins_sel,
+            "Insert selected",
+            "Insert one matching video/audio stream only.",
+        )
 
         self._marks_label = ctk.CTkLabel(
             ins_row,
-            text="In — · Out —  ·  Insert at In (or playhead) · all streams stay in sync",
+            text="In — · Out —",
             anchor="w",
             font=ctk.CTkFont(size=11),
             text_color=("gray40", "gray60"),
         )
         self._marks_label.pack(side="left", padx=(12, 0))
 
-        self._drop_targets = (project, self._project_list, tracks_frame, timeline, header)
+        self._drop_targets = (project, self._project_list, tracks_frame, timeline)
 
     # ── drag & drop ─────────────────────────────────────────────────────
 
@@ -439,7 +465,7 @@ class DonatelloApp(ctk.CTk, TkinterDnD.DnDWrapper):
         mkvs = [p for p in paths if p.suffix.lower() == ".mkv"]
         skipped = [p for p in paths if p.suffix.lower() != ".mkv"]
         if skipped and not mkvs:
-            messagebox.showwarning(
+            dialogs.show_warning(
                 "MKV only",
                 "Donatello imports .mkv files only.",
                 parent=self,
@@ -498,6 +524,7 @@ class DonatelloApp(ctk.CTk, TkinterDnD.DnDWrapper):
                 command=lambda p=item.path: self.load_mkv(p),
             )
             btn.grid(row=row, column=0, sticky="ew", padx=2, pady=2)
+            tip(btn, item.path.name, "Load this clip on the timeline.")
             self._item_buttons[key] = btn
 
     def import_mkv_dialog(self) -> None:
@@ -528,6 +555,10 @@ class DonatelloApp(ctk.CTk, TkinterDnD.DnDWrapper):
         self.load_mkv(path)
 
     def open_settings(self) -> None:
+        # Pause so the next Play picks up a newly chosen audio device.
+        if self._player.playing:
+            self._player.pause()
+            self._play_btn.configure(text="Play")
         show_settings_dialog(self)
         self._refresh_skip_button_labels()
 
@@ -537,6 +568,13 @@ class DonatelloApp(ctk.CTk, TkinterDnD.DnDWrapper):
         if hasattr(self, "_btn_skip_back"):
             self._btn_skip_back.configure(text=f"<< {label}")
             self._btn_skip_fwd.configure(text=f"{label} >>")
+        if hasattr(self, "_tip_skip_back"):
+            self._tip_skip_back.set_text(
+                f"Skip back\nJump backward by {label} (Settings)."
+            )
+            self._tip_skip_fwd.set_text(
+                f"Skip forward\nJump forward by {label} (Settings)."
+            )
 
     def save_workspace(self) -> None:
         if self._workspace_path is None:
@@ -580,8 +618,8 @@ class DonatelloApp(ctk.CTk, TkinterDnD.DnDWrapper):
             _show_error("Save failed", str(exc), parent=self, exc=exc)
             return
         self._workspace_path = written
-        self.title(f"Donatello Solution {__version__} — {written.name}")
-        messagebox.showinfo(
+        self._refresh_window_title()
+        dialogs.show_info(
             "Workspace saved",
             f"Saved workspace to:\n{written}",
             parent=self,
@@ -602,6 +640,14 @@ class DonatelloApp(ctk.CTk, TkinterDnD.DnDWrapper):
             return
         self._open_workspace(Path(path_str))
 
+    def _refresh_window_title(self) -> None:
+        parts = [f"Donatello Solution {__version__}"]
+        if self._workspace_path is not None:
+            parts.append(self._workspace_path.name)
+        if self._active_path is not None:
+            parts.append(self._active_path.name)
+        self.title(" — ".join(parts))
+
     def _reset_workspace_ui(self) -> None:
         self._result = None
         self._items.clear()
@@ -610,10 +656,9 @@ class DonatelloApp(ctk.CTk, TkinterDnD.DnDWrapper):
         self._active_path = None
         self._edits.clear()
         self._markers.clear()
-        self._file_label.configure(text="(no file)")
-        self._meta_label.configure(text="")
         self._show_empty_state()
         self._refresh_project_list()
+        self._refresh_window_title()
 
     def _merge_saved_edits(
         self, media_key: str, result: ProbeResult
@@ -714,7 +759,7 @@ class DonatelloApp(ctk.CTk, TkinterDnD.DnDWrapper):
                 except Exception:
                     logger.exception("Could not restore playhead to %.3f", state.playhead)
 
-        self.title(f"Donatello Solution {__version__} — {path.name}")
+        self._refresh_window_title()
 
         notes: list[str] = []
         if missing:
@@ -728,13 +773,13 @@ class DonatelloApp(ctk.CTk, TkinterDnD.DnDWrapper):
                 + ("\n…" if len(probe_errors) > 8 else "")
             )
         if notes:
-            messagebox.showwarning(
+            dialogs.show_warning(
                 "Workspace opened with problems",
                 "\n\n".join(notes),
                 parent=self,
             )
         else:
-            messagebox.showinfo(
+            dialogs.show_info(
                 "Workspace opened",
                 f"Restored {len(self._items)} media item(s) from:\n{path}",
                 parent=self,
@@ -742,7 +787,7 @@ class DonatelloApp(ctk.CTk, TkinterDnD.DnDWrapper):
 
     def export_dialog(self) -> None:
         if self._active_path is None or self._result is None:
-            messagebox.showwarning(
+            dialogs.show_warning(
                 "Nothing to export",
                 "Load a clip onto the timeline first.",
                 parent=self,
@@ -804,7 +849,7 @@ class DonatelloApp(ctk.CTk, TkinterDnD.DnDWrapper):
                 else float(duration)
             )
             if range_end <= range_start:
-                messagebox.showwarning(
+                dialogs.show_warning(
                     "Export range",
                     "Mark Out must be after Mark In.\n\n"
                     "Clear marks to export the full clip, or fix In/Out.",
@@ -856,7 +901,7 @@ class DonatelloApp(ctk.CTk, TkinterDnD.DnDWrapper):
             notes.append(f"Chapters: {len(chapter_markers)} named marker(s).")
         else:
             notes.append("No named markers — no chapters written.")
-        messagebox.showinfo(
+        dialogs.show_info(
             "Export complete",
             "\n".join(notes) + f"\n\n{out}",
             parent=self,
@@ -921,24 +966,23 @@ class DonatelloApp(ctk.CTk, TkinterDnD.DnDWrapper):
         self._clear_tracks_list()
         ctk.CTkLabel(
             self._tracks_list,
-            text="No clip on the timeline.\n\n"
-            "Import or drop MKVs into Project (left), then click one to load it.",
+            text="No clip",
             anchor="w",
-            justify="left",
             text_color=("gray40", "gray60"),
         ).grid(row=0, column=0, sticky="ew", padx=8, pady=8)
-        self._ruler_label.configure(text="0:00  ·  load a project item onto the timeline")
+        self._ruler_label.configure(text="0:00 —")
         self._clip_bar.set(0)
         self._clip_bar.configure(progress_color=("gray50", "gray35"))
         self._clear_marks()
         self._selected_stream_index = None
         self._reset_preview_ui()
+        self._refresh_window_title()
 
     def _reset_preview_ui(self) -> None:
         self._player.close()
         self._preview_image = None
         self._last_pil = None
-        self._preview_label.configure(image=None, text="Load a clip to preview")
+        self._preview_label.configure(image=None, text="")
         self._play_btn.configure(text="Play")
         self._time_label.configure(text="0:00 / —")
         self._updating_scrub = True
@@ -1068,7 +1112,7 @@ class DonatelloApp(ctk.CTk, TkinterDnD.DnDWrapper):
         self._play_btn.configure(text="Play")
 
     def _on_preview_error(self, message: str) -> None:
-        self.after(0, lambda m=message: messagebox.showwarning("Preview", m, parent=self))
+        self.after(0, lambda m=message: dialogs.show_warning("Preview", m, parent=self))
 
     def _poll_preview(self) -> None:
         self._player.poll()
@@ -1134,17 +1178,12 @@ class DonatelloApp(ctk.CTk, TkinterDnD.DnDWrapper):
             self._clear_marks()
         else:
             self._update_marks_label()
+        self._refresh_window_title()
 
     def _apply_result(self, result: ProbeResult) -> None:
         duration = format_duration(result.duration_seconds)
-        self._file_label.configure(text=result.path.name)
-        self._meta_label.configure(
-            text=f"{result.path}  ·  duration {duration}  ·  {result.format_name}"
-        )
         self._refresh_tracks_list()
-        self._ruler_label.configure(
-            text=f"0:00  ────────────────────────────────  {duration}"
-        )
+        self._ruler_label.configure(text=f"0:00 — {duration}")
         self._clip_bar.set(1.0)
         self._clip_bar.configure(progress_color=("#1f6aa5", "#1f6aa5"))
 
@@ -1190,18 +1229,23 @@ class DonatelloApp(ctk.CTk, TkinterDnD.DnDWrapper):
                     justify="left",
                 ).grid(row=0, column=0, sticky="ew", padx=10, pady=8)
 
-                ctk.CTkButton(
+                btn_sel = ctk.CTkButton(
                     row_frame,
                     text="Select",
                     width=70,
                     command=lambda s=track.stream_index: self._select_stream(s),
-                ).grid(row=0, column=1, padx=(4, 2), pady=6)
-                ctk.CTkButton(
+                )
+                btn_sel.grid(row=0, column=1, padx=(4, 2), pady=6)
+                tip(btn_sel, "Select", "Select this stream for Cut/Insert selected.")
+
+                btn_edit = ctk.CTkButton(
                     row_frame,
                     text="Edit",
                     width=70,
                     command=lambda s=track.stream_index: self._edit_track(s),
-                ).grid(row=0, column=2, padx=(2, 8), pady=6)
+                )
+                btn_edit.grid(row=0, column=2, padx=(2, 8), pady=6)
+                tip(btn_edit, "Edit", "Change title, language, and subtitle flags.")
                 row += 1
 
         other = [t for t in self._result.tracks if t.kind not in ("video", "audio", "subtitle")]
@@ -1257,7 +1301,7 @@ class DonatelloApp(ctk.CTk, TkinterDnD.DnDWrapper):
 
     def _add_marker_here(self) -> None:
         if self._active_path is None:
-            messagebox.showwarning(
+            dialogs.show_warning(
                 "Add marker",
                 "Load a clip onto the timeline first.",
                 parent=self,
@@ -1265,7 +1309,7 @@ class DonatelloApp(ctk.CTk, TkinterDnD.DnDWrapper):
             return
         t = float(self._player.position)
         default_name = f"Chapter {len(self._active_marker_list()) + 1}"
-        name = simpledialog.askstring(
+        name = dialogs.ask_string(
             "Add marker",
             f"Name for marker at {format_duration(t)}:",
             initialvalue=default_name,
@@ -1282,7 +1326,7 @@ class DonatelloApp(ctk.CTk, TkinterDnD.DnDWrapper):
 
     def _manage_markers(self) -> None:
         if self._active_path is None:
-            messagebox.showwarning(
+            dialogs.show_warning(
                 "Markers",
                 "Load a clip onto the timeline first.",
                 parent=self,
@@ -1321,17 +1365,16 @@ class DonatelloApp(ctk.CTk, TkinterDnD.DnDWrapper):
             if track:
                 sel = f"{track.kind[0].upper()}{track.type_index}"
         n_markers = len(self._active_marker_list()) if self._active_path else 0
-        self._marks_label.configure(
-            text=f"In {inn} · Out {out}  ·  markers: {n_markers}  ·  selected: {sel}  ·  "
-            "Export keeps In→Out · Cut removes In→Out · markers→chapters"
-        )
+        marker_bit = f" · {n_markers}m" if n_markers else ""
+        sel_bit = f" · {sel}" if sel != "none" else ""
+        self._marks_label.configure(text=f"In {inn} · Out {out}{marker_bit}{sel_bit}")
 
     def _do_cut(self, single_stream: bool) -> None:
         if self._active_path is None or self._result is None:
-            messagebox.showwarning("Cut", "Load a clip onto the timeline first.", parent=self)
+            dialogs.show_warning("Cut", "Load a clip onto the timeline first.", parent=self)
             return
         if self._mark_in is None or self._mark_out is None:
-            messagebox.showwarning(
+            dialogs.show_warning(
                 "Cut",
                 "Set Mark In and Mark Out from the playhead first.",
                 parent=self,
@@ -1346,7 +1389,7 @@ class DonatelloApp(ctk.CTk, TkinterDnD.DnDWrapper):
         selected: MediaTrack | None = None
         if single_stream:
             if self._selected_stream_index is None:
-                messagebox.showwarning(
+                dialogs.show_warning(
                     "Cut selected",
                     "Select a video or audio stream in the Streams list first.",
                     parent=self,
@@ -1394,7 +1437,7 @@ class DonatelloApp(ctk.CTk, TkinterDnD.DnDWrapper):
             _show_error("Cut failed", str(exc), parent=self, exc=exc)
             return
 
-        messagebox.showinfo(
+        dialogs.show_info(
             "Cut complete",
             f"Removed {format_duration(cut.start)}–{format_duration(cut.end)} ({mode}).\n\n"
             f"Saved:\n{out_path}",
@@ -1425,7 +1468,7 @@ class DonatelloApp(ctk.CTk, TkinterDnD.DnDWrapper):
             dialog.grab_set()
             ctk.CTkLabel(
                 dialog,
-                text="Choose a Project clip to insert (or Browse…)",
+                text="Choose a Project clip to insert (or Browse)",
                 anchor="w",
             ).pack(fill="x", padx=16, pady=(16, 8))
             list_frame = ctk.CTkScrollableFrame(dialog)
@@ -1457,7 +1500,7 @@ class DonatelloApp(ctk.CTk, TkinterDnD.DnDWrapper):
 
             btn_row = ctk.CTkFrame(dialog, fg_color="transparent")
             btn_row.pack(fill="x", padx=16, pady=(0, 16))
-            ctk.CTkButton(btn_row, text="Browse…", width=100, command=browse).pack(
+            ctk.CTkButton(btn_row, text="Browse", width=100, command=browse).pack(
                 side="left"
             )
             ctk.CTkButton(btn_row, text="Cancel", width=100, command=dialog.destroy).pack(
@@ -1476,14 +1519,14 @@ class DonatelloApp(ctk.CTk, TkinterDnD.DnDWrapper):
 
     def _do_insert(self, single_stream: bool) -> None:
         if self._active_path is None or self._result is None:
-            messagebox.showwarning("Insert", "Load a base clip onto the timeline first.", parent=self)
+            dialogs.show_warning("Insert", "Load a base clip onto the timeline first.", parent=self)
             return
 
         insert_path = self._pick_insert_source()
         if insert_path is None:
             return
         if _path_key(insert_path) == _path_key(self._active_path):
-            messagebox.showwarning(
+            dialogs.show_warning(
                 "Insert",
                 "Pick a different clip than the one already on the timeline.",
                 parent=self,
@@ -1495,7 +1538,7 @@ class DonatelloApp(ctk.CTk, TkinterDnD.DnDWrapper):
         selected_ins = None
         if single_stream:
             if self._selected_stream_index is None:
-                messagebox.showwarning(
+                dialogs.show_warning(
                     "Insert selected",
                     "Select a video or audio stream on the base clip first.",
                     parent=self,
@@ -1510,7 +1553,7 @@ class DonatelloApp(ctk.CTk, TkinterDnD.DnDWrapper):
                 None,
             )
             if selected_base is None or selected_base.kind not in ("video", "audio"):
-                messagebox.showwarning(
+                dialogs.show_warning(
                     "Insert selected",
                     "Select a video or audio stream (not subtitle).",
                     parent=self,
@@ -1568,7 +1611,7 @@ class DonatelloApp(ctk.CTk, TkinterDnD.DnDWrapper):
             _show_error("Insert failed", str(exc), parent=self, exc=exc)
             return
 
-        messagebox.showinfo(
+        dialogs.show_info(
             "Insert complete",
             f"Inserted at {format_duration(at)} ({mode}).\n\nSaved:\n{out_path}",
             parent=self,
