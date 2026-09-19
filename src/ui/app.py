@@ -1,4 +1,4 @@
-"""Dark-mode shell: project panel, track edit, import/DnD, timeline strip."""
+"""Dark-mode shell: project panel, preview, multi-lane timeline."""
 
 from __future__ import annotations
 
@@ -35,6 +35,7 @@ from src.ui import dialogs
 from src.ui.markers_dialog import open_markers_dialog
 from src.ui.menubar import ThemedMenuBar
 from src.ui.settings_dialog import open_settings as show_settings_dialog
+from src.ui.timeline_lanes import LaneTrack, TimelineLanes
 from src.ui.tooltip import tip
 from src.ui.track_edit_dialog import ask_edit_track
 
@@ -121,6 +122,7 @@ class DonatelloApp(ctk.CTk, TkinterDnD.DnDWrapper):
         self._active_path: Path | None = None
         self._edits: dict[str, dict[int, TrackEditState]] = {}
         self._markers: dict[str, list[TimelineMarker]] = {}
+        self._audio_volumes: dict[str, dict[int, float]] = {}
         self._mark_in: float | None = None
         self._mark_out: float | None = None
         self._selected_stream_index: int | None = None
@@ -241,9 +243,8 @@ class DonatelloApp(ctk.CTk, TkinterDnD.DnDWrapper):
         tracks_frame.grid(row=1, column=1, sticky="nsew")
         tracks_frame.grid_columnconfigure(0, weight=1)
         tracks_frame.grid_rowconfigure(0, weight=1)
-        tracks_frame.grid_rowconfigure(1, weight=0)
 
-        # Preview (top of right column)
+        # Preview (right column)
         preview = ctk.CTkFrame(tracks_frame, fg_color=("gray88", "gray16"), corner_radius=0)
         preview.grid(row=0, column=0, sticky="nsew")
         preview.grid_columnconfigure(0, weight=1)
@@ -305,10 +306,22 @@ class DonatelloApp(ctk.CTk, TkinterDnD.DnDWrapper):
         self._btn_skip_fwd = ctk.CTkButton(
             transport, text="5s >>", width=64, command=lambda: self._step_seconds(1)
         )
-        self._btn_skip_fwd.pack(side="left", padx=(4, 8))
+        self._btn_skip_fwd.pack(side="left", padx=(4, 4))
         self._tip_skip_fwd = tip(
             self._btn_skip_fwd, "Skip forward", "Jump forward by the skip amount."
         )
+
+        btn_prev_mark = ctk.CTkButton(
+            transport, text="‹ M", width=44, command=lambda: self._goto_marker(-1)
+        )
+        btn_prev_mark.pack(side="left", padx=(8, 2))
+        tip(btn_prev_mark, "Previous marker", "Jump to the previous named marker.")
+
+        btn_next_mark = ctk.CTkButton(
+            transport, text="M ›", width=44, command=lambda: self._goto_marker(1)
+        )
+        btn_next_mark.pack(side="left", padx=2)
+        tip(btn_next_mark, "Next marker", "Jump to the next named marker.")
 
         self._time_label = ctk.CTkLabel(
             transport,
@@ -317,7 +330,7 @@ class DonatelloApp(ctk.CTk, TkinterDnD.DnDWrapper):
             anchor="w",
             font=ctk.CTkFont(family="Consolas", size=12),
         )
-        self._time_label.pack(side="left", padx=(4, 0))
+        self._time_label.pack(side="left", padx=(8, 0))
 
         scrub_row = ctk.CTkFrame(preview, fg_color="transparent")
         scrub_row.grid(row=3, column=0, sticky="ew", padx=12, pady=(0, 8))
@@ -329,28 +342,12 @@ class DonatelloApp(ctk.CTk, TkinterDnD.DnDWrapper):
         self._scrub.set(0)
         self._scrub.configure(state="disabled")
 
-        streams = ctk.CTkFrame(tracks_frame, corner_radius=0, height=160)
-        streams.grid(row=1, column=0, sticky="ew")
-        streams.grid_propagate(False)
-        streams.grid_columnconfigure(0, weight=1)
-        streams.grid_rowconfigure(1, weight=1)
-
-        ctk.CTkLabel(
-            streams,
-            text="Streams",
-            anchor="w",
-            font=ctk.CTkFont(size=12, weight="bold"),
-        ).grid(row=0, column=0, sticky="ew", padx=12, pady=(6, 2))
-
-        self._tracks_list = ctk.CTkScrollableFrame(streams, fg_color="transparent")
-        self._tracks_list.grid(row=1, column=0, sticky="nsew", padx=8, pady=(0, 8))
-        self._tracks_list.grid_columnconfigure(0, weight=1)
-
         self._refresh_skip_button_labels()
 
-        timeline = ctk.CTkFrame(self, fg_color=("gray80", "gray14"), corner_radius=0, height=200)
+        timeline = ctk.CTkFrame(self, fg_color=("gray80", "gray14"), corner_radius=0, height=360)
         timeline.grid(row=2, column=0, columnspan=2, sticky="ew")
         timeline.grid_columnconfigure(0, weight=1)
+        timeline.grid_rowconfigure(1, weight=1)
         timeline.grid_propagate(False)
 
         ctk.CTkLabel(
@@ -360,22 +357,16 @@ class DonatelloApp(ctk.CTk, TkinterDnD.DnDWrapper):
             font=ctk.CTkFont(size=13, weight="bold"),
         ).grid(row=0, column=0, sticky="ew", padx=16, pady=(10, 2))
 
-        self._ruler_label = ctk.CTkLabel(
+        self._lanes = TimelineLanes(
             timeline,
-            text="0:00 —",
-            anchor="w",
-            font=ctk.CTkFont(family="Consolas", size=11),
-            text_color=("gray40", "gray60"),
+            on_seek=self._seek_preview,
+            on_select=self._select_stream,
+            on_edit=self._edit_track,
         )
-        self._ruler_label.grid(row=1, column=0, sticky="ew", padx=16, pady=(0, 2))
-
-        self._clip_bar = ctk.CTkProgressBar(timeline, height=22, corner_radius=4)
-        self._clip_bar.grid(row=2, column=0, sticky="ew", padx=16, pady=(0, 6))
-        self._clip_bar.set(0)
-        self._clip_bar.configure(progress_color=("gray50", "gray35"))
+        self._lanes.grid(row=1, column=0, sticky="nsew", padx=16, pady=(0, 6))
 
         cut_row = ctk.CTkFrame(timeline, fg_color="transparent")
-        cut_row.grid(row=3, column=0, sticky="ew", padx=16, pady=(0, 4))
+        cut_row.grid(row=2, column=0, sticky="ew", padx=16, pady=(0, 4))
 
         btn_in = ctk.CTkButton(cut_row, text="Mark In", width=78, command=self._mark_in_here)
         btn_in.pack(side="left", padx=(0, 4))
@@ -421,7 +412,7 @@ class DonatelloApp(ctk.CTk, TkinterDnD.DnDWrapper):
         tip(btn_cut_sel, "Cut selected", "Remove In→Out on the selected video/audio only.")
 
         ins_row = ctk.CTkFrame(timeline, fg_color="transparent")
-        ins_row.grid(row=4, column=0, sticky="ew", padx=16, pady=(0, 14))
+        ins_row.grid(row=3, column=0, sticky="ew", padx=16, pady=(0, 14))
 
         btn_ins = ctk.CTkButton(
             ins_row, text="Insert", width=86, command=lambda: self._do_insert(False)
@@ -609,6 +600,7 @@ class DonatelloApp(ctk.CTk, TkinterDnD.DnDWrapper):
             playhead=self._player.position if self._active_path is not None else None,
             track_edits={k: dict(v) for k, v in self._edits.items()},
             markers={k: list(v) for k, v in self._markers.items()},
+            audio_volumes={k: dict(v) for k, v in self._audio_volumes.items()},
         )
 
     def _write_workspace(self, path: Path) -> None:
@@ -656,6 +648,7 @@ class DonatelloApp(ctk.CTk, TkinterDnD.DnDWrapper):
         self._active_path = None
         self._edits.clear()
         self._markers.clear()
+        self._audio_volumes.clear()
         self._show_empty_state()
         self._refresh_project_list()
         self._refresh_window_title()
@@ -701,6 +694,9 @@ class DonatelloApp(ctk.CTk, TkinterDnD.DnDWrapper):
         self._workspace_path = path.expanduser()
         self._edits = {k: dict(v) for k, v in state.track_edits.items()}
         self._markers = {k: list(v) for k, v in state.markers.items()}
+        self._audio_volumes = {
+            k: dict(v) for k, v in state.audio_volumes.items()
+        }
 
         missing: list[str] = []
         probe_errors: list[str] = []
@@ -963,16 +959,7 @@ class DonatelloApp(ctk.CTk, TkinterDnD.DnDWrapper):
     # ── timeline / streams ──────────────────────────────────────────────
 
     def _show_empty_state(self) -> None:
-        self._clear_tracks_list()
-        ctk.CTkLabel(
-            self._tracks_list,
-            text="No clip",
-            anchor="w",
-            text_color=("gray40", "gray60"),
-        ).grid(row=0, column=0, sticky="ew", padx=8, pady=8)
-        self._ruler_label.configure(text="0:00 —")
-        self._clip_bar.set(0)
-        self._clip_bar.configure(progress_color=("gray50", "gray35"))
+        self._lanes.clear()
         self._clear_marks()
         self._selected_stream_index = None
         self._reset_preview_ui()
@@ -1031,6 +1018,28 @@ class DonatelloApp(ctk.CTk, TkinterDnD.DnDWrapper):
         skip = app_settings.get_preview_skip_seconds()
         self._play_btn.configure(text="Play")
         self._player.step_seconds(direction * skip)
+
+    def _goto_marker(self, direction: int) -> None:
+        """Jump to previous (-1) or next (+1) named marker relative to playhead."""
+        if self._active_path is None:
+            return
+        markers = sorted(self._active_marker_list(), key=lambda m: (m.time, m.name.lower()))
+        if not markers:
+            return
+        t = float(self._player.position)
+        eps = 0.05
+        if direction < 0:
+            candidates = [m for m in markers if m.time < t - eps]
+            if not candidates:
+                return
+            target = candidates[-1]
+        else:
+            candidates = [m for m in markers if m.time > t + eps]
+            if not candidates:
+                return
+            target = candidates[0]
+        self._play_btn.configure(text="Play")
+        self._seek_preview(float(target.time))
 
     def _on_scrub(self, value: str | float) -> None:
         if self._updating_scrub or self._active_path is None:
@@ -1107,6 +1116,8 @@ class DonatelloApp(ctk.CTk, TkinterDnD.DnDWrapper):
             self._updating_scrub = True
             self._scrub.set(min(seconds, duration))
             self._updating_scrub = False
+        if hasattr(self, "_lanes"):
+            self._lanes.set_position(seconds)
 
     def _on_preview_ended(self) -> None:
         self._play_btn.configure(text="Play")
@@ -1121,10 +1132,6 @@ class DonatelloApp(ctk.CTk, TkinterDnD.DnDWrapper):
     def _on_close(self) -> None:
         self._player.close()
         self.destroy()
-
-    def _clear_tracks_list(self) -> None:
-        for child in self._tracks_list.winfo_children():
-            child.destroy()
 
     def _ensure_edits(self, result: ProbeResult) -> dict[int, TrackEditState]:
         key = _path_key(result.path)
@@ -1171,6 +1178,7 @@ class DonatelloApp(ctk.CTk, TkinterDnD.DnDWrapper):
         else:
             self._selected_stream_index = None
         self._ensure_edits(result)
+        self._seed_markers_from_probe(result)
         self._apply_result(result)
         self._refresh_project_list()
         self._open_preview(result)
@@ -1180,101 +1188,132 @@ class DonatelloApp(ctk.CTk, TkinterDnD.DnDWrapper):
             self._update_marks_label()
         self._refresh_window_title()
 
-    def _apply_result(self, result: ProbeResult) -> None:
-        duration = format_duration(result.duration_seconds)
-        self._refresh_tracks_list()
-        self._ruler_label.configure(text=f"0:00 — {duration}")
-        self._clip_bar.set(1.0)
-        self._clip_bar.configure(progress_color=("#1f6aa5", "#1f6aa5"))
-
-    def _refresh_tracks_list(self) -> None:
-        self._clear_tracks_list()
-        if self._result is None:
-            self._show_empty_state()
+    def _seed_markers_from_probe(self, result: ProbeResult) -> None:
+        """Import MKV chapters as markers when this clip has none in the workspace yet."""
+        key = _path_key(result.path)
+        existing = self._markers.get(key)
+        if existing:
             return
+        if not result.chapters:
+            self._markers.setdefault(key, [])
+            return
+        self._markers[key] = [
+            TimelineMarker(time=m.time, name=m.name) for m in result.chapters
+        ]
+        logger.info(
+            "Loaded %d chapter marker(s) from %s",
+            len(self._markers[key]),
+            result.path.name,
+        )
 
+    def _apply_result(self, result: ProbeResult) -> None:
+        self._ensure_edits(result)
+        self._refresh_timeline_lanes()
+        self._sync_preview_monitor_audio()
+
+    def _audio_volume_map(self) -> dict[int, float]:
+        if self._active_path is None:
+            return {}
+        key = _path_key(self._active_path)
+        return self._audio_volumes.setdefault(key, {})
+
+    def _get_audio_volume(self, stream_index: int) -> float:
+        return float(self._audio_volume_map().get(stream_index, 1.0))
+
+    def _set_audio_volume(self, stream_index: int, volume: float) -> None:
+        value = float(max(0.0, min(2.0, volume)))
+        self._audio_volume_map()[stream_index] = value
+        if self._result is None:
+            return
+        track = next(
+            (t for t in self._result.tracks if t.stream_index == stream_index),
+            None,
+        )
+        if track is None or track.kind != "audio":
+            return
+        # Live monitor follows selected audio (or first audio).
+        selected = None
+        if self._selected_stream_index is not None:
+            selected = next(
+                (
+                    t
+                    for t in self._result.tracks
+                    if t.stream_index == self._selected_stream_index
+                ),
+                None,
+            )
+        monitor = selected if selected and selected.kind == "audio" else next(
+            (t for t in self._result.tracks if t.kind == "audio"),
+            None,
+        )
+        if monitor is not None and monitor.stream_index == stream_index:
+            self._player.set_volume(value)
+
+    def _sync_preview_monitor_audio(self) -> None:
+        if self._result is None:
+            self._player.set_audio_type_index(0)
+            self._player.set_volume(1.0)
+            return
+        audios = [t for t in self._result.tracks if t.kind == "audio"]
+        if not audios:
+            self._player.set_audio_type_index(0)
+            self._player.set_volume(1.0)
+            return
+        chosen = audios[0]
+        if self._selected_stream_index is not None:
+            for track in audios:
+                if track.stream_index == self._selected_stream_index:
+                    chosen = track
+                    break
+        self._player.set_audio_type_index(chosen.type_index)
+        self._player.set_volume(self._get_audio_volume(chosen.stream_index))
+
+    def _refresh_timeline_lanes(self) -> None:
+        if not hasattr(self, "_lanes"):
+            return
+        if self._result is None:
+            self._lanes.clear()
+            return
         edits = self._ensure_edits(self._result)
         track_by_index = {t.stream_index: t for t in self._result.tracks}
-        row = 0
-
+        lanes: list[LaneTrack] = []
         for kind in ("video", "audio", "subtitle"):
-            group = [t for t in self._result.tracks if t.kind == kind]
-            if not group:
-                continue
-            ctk.CTkLabel(
-                self._tracks_list,
-                text=f"— {kind.upper()} —",
-                anchor="w",
-                font=ctk.CTkFont(size=12, weight="bold"),
-                text_color=("gray40", "gray60"),
-            ).grid(row=row, column=0, sticky="ew", padx=4, pady=(8, 2))
-            row += 1
-
-            for track in group:
+            for track in self._result.tracks:
+                if track.kind != kind:
+                    continue
                 edit = edits.get(track.stream_index) or TrackEditState.from_track(track)
-                edits[track.stream_index] = edit
-                is_sel = self._selected_stream_index == track.stream_index
-                row_frame = ctk.CTkFrame(
-                    self._tracks_list,
-                    fg_color=("gray70", "gray28") if is_sel else ("gray85", "gray20"),
+                # Prefer edited track title; fall back to stream label / file name
+                title = (edit.title or "").strip()
+                if not title:
+                    if track.kind == "video" and self._active_path is not None:
+                        title = self._active_path.name
+                    else:
+                        title = edit.display_label(track_by_index.get(track.stream_index))
+                if len(title) > 72:
+                    title = title[:71] + "…"
+                lanes.append(
+                    LaneTrack(
+                        track=track,
+                        label=title,
+                    )
                 )
-                row_frame.grid(row=row, column=0, sticky="ew", padx=2, pady=2)
-                row_frame.grid_columnconfigure(0, weight=1)
-
-                ctk.CTkLabel(
-                    row_frame,
-                    text=edit.display_label(track_by_index.get(track.stream_index)),
-                    anchor="w",
-                    font=ctk.CTkFont(family="Consolas", size=12),
-                    justify="left",
-                ).grid(row=0, column=0, sticky="ew", padx=10, pady=8)
-
-                btn_sel = ctk.CTkButton(
-                    row_frame,
-                    text="Select",
-                    width=70,
-                    command=lambda s=track.stream_index: self._select_stream(s),
-                )
-                btn_sel.grid(row=0, column=1, padx=(4, 2), pady=6)
-                tip(btn_sel, "Select", "Select this stream for Cut/Insert selected.")
-
-                btn_edit = ctk.CTkButton(
-                    row_frame,
-                    text="Edit",
-                    width=70,
-                    command=lambda s=track.stream_index: self._edit_track(s),
-                )
-                btn_edit.grid(row=0, column=2, padx=(2, 8), pady=6)
-                tip(btn_edit, "Edit", "Change title, language, and subtitle flags.")
-                row += 1
-
-        other = [t for t in self._result.tracks if t.kind not in ("video", "audio", "subtitle")]
-        if other:
-            ctk.CTkLabel(
-                self._tracks_list,
-                text="— OTHER —",
-                anchor="w",
-                font=ctk.CTkFont(size=12, weight="bold"),
-            ).grid(row=row, column=0, sticky="ew", padx=4, pady=(8, 2))
-            row += 1
-            for track in other:
-                ctk.CTkLabel(
-                    self._tracks_list,
-                    text=track.display_label(),
-                    anchor="w",
-                    font=ctk.CTkFont(family="Consolas", size=12),
-                ).grid(row=row, column=0, sticky="ew", padx=10, pady=4)
-                row += 1
-
-        if row == 0:
-            ctk.CTkLabel(self._tracks_list, text="(no streams)", anchor="w").grid(
-                row=0, column=0, sticky="ew", padx=8, pady=8
-            )
+        duration = float(self._result.duration_seconds or 0.0)
+        self._lanes.set_tracks(
+            lanes,
+            duration=duration,
+            selected_stream=self._selected_stream_index,
+            mark_in=self._mark_in,
+            mark_out=self._mark_out,
+            markers=list(self._active_marker_list()) if self._active_path else [],
+            position=float(self._player.position),
+        )
 
     def _select_stream(self, stream_index: int) -> None:
         self._selected_stream_index = stream_index
-        self._refresh_tracks_list()
         self._update_marks_label()
+        if hasattr(self, "_lanes"):
+            self._lanes.set_selected(stream_index)
+        self._sync_preview_monitor_audio()
 
     def _mark_in_here(self) -> None:
         if self._active_path is None:
@@ -1368,6 +1407,10 @@ class DonatelloApp(ctk.CTk, TkinterDnD.DnDWrapper):
         marker_bit = f" · {n_markers}m" if n_markers else ""
         sel_bit = f" · {sel}" if sel != "none" else ""
         self._marks_label.configure(text=f"In {inn} · Out {out}{marker_bit}{sel_bit}")
+        if hasattr(self, "_lanes"):
+            self._lanes.set_marks(self._mark_in, self._mark_out)
+            if self._active_path is not None:
+                self._lanes.set_markers(list(self._active_marker_list()))
 
     def _do_cut(self, single_stream: bool) -> None:
         if self._active_path is None or self._result is None:
@@ -1637,6 +1680,8 @@ class DonatelloApp(ctk.CTk, TkinterDnD.DnDWrapper):
             is_default=edit.is_default,
             is_forced=edit.is_forced,
             show_disposition=(edit.kind == "subtitle"),
+            show_volume=(edit.kind == "audio"),
+            volume=self._get_audio_volume(stream_index),
         )
         if result is None:
             return
@@ -1646,7 +1691,9 @@ class DonatelloApp(ctk.CTk, TkinterDnD.DnDWrapper):
         if edit.kind == "subtitle":
             edit.is_default = result.is_default
             edit.is_forced = result.is_forced
-        self._refresh_tracks_list()
+        if edit.kind == "audio" and result.volume is not None:
+            self._set_audio_volume(stream_index, result.volume)
+        self._refresh_timeline_lanes()
 
 
 def run() -> None:

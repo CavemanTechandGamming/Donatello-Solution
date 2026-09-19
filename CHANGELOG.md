@@ -9,38 +9,36 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
-- Timeline shell UI: File → Open MKV, duration + track list (video / audio layout / softsubs), basic timeline strip
+- Timeline shell: File → Open MKV, duration + track list (video / audio layout / softsubs)
 - FFmpeg bootstrap (`static-ffmpeg`) + `ffprobe` MKV probe (`src/core/`)
 - Project panel (left): Import + drag-and-drop MKVs (`tkinterdnd2`); click item to load on timeline
-- Settings: default workspace save + export folders (persisted); Save/Export dialogs start there
-- Track edit (Muxer-style): title + language on video/audio/subtitle; Default/Forced on subs; written on Export remux
-- In-app preview: Play/Pause/Stop + scrub (PyAV; HEVC 10-bit + AC3); decode off UI thread
-- Preview layout: aspect-fit (no crop); frame step ±1f; seconds skip ±N (Settings); compact streams strip
+- Settings: tabbed **Folders / Preview / Audio / Help** — default workspace/export folders; preview skip seconds; Audio = output device (System default or pinned) + sample rate + downmix Stereo / Mono / **Keep channels** (monitor only)
+- Track edit (Muxer-style): title + language on video / audio / subtitle; Default / Forced on subs; written on Export remux
+- In-app preview: Play / Pause / Stop + scrub (PyAV; HEVC 10-bit + AC3); aspect-fit; ±1 frame; ±skip seconds; decode off UI thread
+- Preview monitor audio: resample to float @ Settings sample rate; soft clip; Keep channels uses source layout when the device allows (else stereo fallback); Export never downmixes
 - Timeline cut: Mark In/Out; Cut = all streams (copy+concat); Cut selected = one video/audio track
 - Insert footage: Insert… at In/playhead (all streams); Insert selected… for one V/A track
-- Rotating file log under `%APPDATA%\DonatelloSolution\donatello.log` (Settings → Open log file); errors/warnings + ffmpeg stderr; crash hook
-- Workspace save/open: `.donatello` restores project panel, active timeline clip, Mark In/Out, playhead, stream selection, track edits
-- Single Export: timeline clip remux with track metadata; named markers written as MKV chapters (Add marker / Markers…)
-- Export In/Out: when Mark In/Out are set, Export keeps that span (shorter file); Cut still removes the span
-- UI cleanup: removed path/directory header; quieter chrome; active clip / workspace name in window title
-- Preview monitor audio: resample to float @ Settings sample rate; larger buffer (no drop-on-full); soft clip
-- Settings: tabbed **Folders / Preview / Audio / Help**; Audio = output (System default follows Windows or pin a device) + sample rate + downmix Stereo / Mono / **Keep channels** (monitor only; Keep uses source layout when the device allows, else stereo fallback)
-- Themed top menu bar (File / Edit / Help) matching dark chrome; Help always last
-- Themed About dialog (Help → About) matching dark chrome instead of native messagebox
-- Themed modal dialogs for info / warning / error / string prompts (replaces native messagebox / simpledialog)
-- Fix Export failure on files with softsubs (`-disposition:s:N` instead of invalid `s:s:N`)
-- UX lock: Save/Open = workspace; Export = single or multiple MKV (markers/chapters via Export)
-- Destination vision: full MKV-dedicated all-in-one editor (grow into it)
-- Cut lock: default = all streams together; Ctrl = selected track only
-- Audio layouts: preserve stereo · 2.1 · 5.1 · 7.1 (no default downmix)
-- Import UX: drag-and-drop (required) + browse/dialog; left project panel; Settings default save/export folders
-- Track edit (Muxer-style): title + language by name on **video · audio · subtitle**; Default/Forced on subs
+- Rotating file log under `%APPDATA%\DonatelloSolution\donatello.log` (Settings → Open log file)
+- Workspace save/open: `.donatello` restores project panel, active clip, Mark In/Out, playhead, stream selection, track edits, markers, and audio volumes
+- Single Export: remux with track metadata; named markers as MKV chapters; with Mark In/Out set, Export **keeps** that span (Cut still removes it)
+- Multi-lane timeline: one row per video / audio / subtitle; title above each bar; Sel / Edit on the lane; Streams panel removed
+- Audio volume 0%–200% in the audio Edit dialog (slider + typed percent); preview monitor gain; soft-clips peaks; persisted in the workspace
+- Marker strip (gold ticks + names); click a marker on the strip or lane to seek; transport **‹ M** / **M ›** for previous / next marker
+- Import MKV chapters as timeline markers on load (when the clip has none in the workspace yet)
+- Themed top menu bar (File / Edit / Help); themed About dialog; themed info / warning / error / string-prompt dialogs
+- Dark hover tooltips on controls; quieter chrome; active clip / workspace name in window title
 
 ### Changed
 
+- README reshaped to the vault README template (current alpha features)
+
 ### Fixed
 
+- Export failure on files with softsubs (`-disposition:s:N` instead of invalid `s:s:N`)
+
 ### Removed
+
+- Separate Streams list panel (Select / Edit / volume live on timeline lanes)
 
 ## [0.0.1] — 2026-09-15
 

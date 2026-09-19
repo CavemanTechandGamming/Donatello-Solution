@@ -18,9 +18,10 @@ Premiere-inspired timeline editor for **MKV only** — cut, assemble, and export
 - **Preview monitor audio** — Settings for output device, sample rate, and downmix (Stereo / Mono / Keep channels); Export never downmixes
 - **Mark In / Out** — Cut removes that range (all streams by default; selected-track cut available); Export with marks set keeps that span
 - **Insert** — insert another MKV at In or playhead (all streams or selected video/audio)
-- **Track edit** — title and language on video / audio / subtitle; Default / Forced on subs; written on Export
-- **Named markers** — become chapters in the exported MKV
-- **Workspace save / open** — `.donatello` restores the bin, active clip, marks, playhead, selection, track edits, and markers
+- **Track edit** — title and language on video / audio / subtitle; Default / Forced on subs; Edit lives on each timeline lane; written on Export
+- **Named markers** — become chapters in the exported MKV; opening an MKV that already has chapters loads them as markers
+- **Multi-lane timeline** — one row per video / audio / subtitle with playhead, In/Out, and markers; click a lane or marker to seek; Sel / Edit on the lane; audio volume (0%–200%) in Edit; **‹ M** / **M ›** jump between markers
+- **Workspace save / open** — `.donatello` restores the bin, active clip, marks, playhead, selection, track edits, markers, and audio volumes
 - **Export (single MKV)** — remux with track metadata and chapters; prefers stream copy when possible
 - **Settings** — default workspace and export folders; open the diagnostic log
 - Dark CustomTkinter chrome with a themed menu bar and themed dialogs
@@ -62,7 +63,7 @@ Until then, run from source (see [CONTRIBUTING.md](CONTRIBUTING.md)).
 
 - Use **Keep channels** in Settings → Audio when you want the preview monitor to leave 5.1 / 7.1 alone (falls back to stereo if the device can’t open that many channels).
 - Open the log from Settings → Help if something fails — details live under `%APPDATA%\DonatelloSolution\donatello.log` on Windows.
-- Multi-track timeline lanes and multi-file Export from marker ranges are still ahead; single-file Export and the current timeline strip are the stopgap.
+- Timeline **segment drag** (slide chunks / fill gaps) and multi-file Export from marker ranges are still ahead.
 
 ---
 

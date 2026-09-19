@@ -6,12 +6,14 @@ from __future__ import annotations
 
 import json
 import subprocess
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
 from src.core.ffmpeg_paths import FFmpegBootstrapError, ensure_ffmpeg_on_path, ffprobe_binary
 from src.core.logging_setup import get_logger
+from src.core.markers import TimelineMarker
+from src.core.markers import TimelineMarker
 
 logger = get_logger("probe")
 
@@ -113,6 +115,7 @@ class ProbeResult:
     duration_seconds: float | None
     tracks: list[MediaTrack]
     format_name: str
+    chapters: list[TimelineMarker] = field(default_factory=list)
 
 
 def format_duration(seconds: float | None) -> str:
@@ -251,6 +254,7 @@ def _probe_json(path: Path) -> dict[str, Any]:
         "error",
         "-show_format",
         "-show_streams",
+        "-show_chapters",
         "-probesize",
         "200M",
         "-analyzeduration",
@@ -360,9 +364,57 @@ def _tracks_from_info(info: dict[str, Any]) -> list[MediaTrack]:
     return tracks
 
 
+def _chapters_from_info(info: dict[str, Any]) -> list[TimelineMarker]:
+    """MKV chapter start times → timeline markers (title from chapter tags)."""
+    out: list[TimelineMarker] = []
+    raw_chapters = info.get("chapters") or []
+    if not isinstance(raw_chapters, list):
+        return []
+
+    for index, chapter in enumerate(raw_chapters):
+        if not isinstance(chapter, dict):
+            continue
+        start_raw = chapter.get("start_time")
+        if start_raw is None or start_raw == "N/A":
+            start_raw = chapter.get("start")
+            time_base = chapter.get("time_base") or "1/1000000000"
+            try:
+                start_ticks = float(start_raw)
+                if "/" in str(time_base):
+                    num_s, den_s = str(time_base).split("/", 1)
+                    t = start_ticks * (float(num_s) / float(den_s))
+                else:
+                    t = start_ticks
+            except (TypeError, ValueError, ZeroDivisionError):
+                continue
+        else:
+            try:
+                t = float(start_raw)
+            except (TypeError, ValueError):
+                continue
+
+        tags = chapter.get("tags") or {}
+        title = ""
+        if isinstance(tags, dict):
+            title = str(tags.get("title") or tags.get("TITLE") or "").strip()
+        if not title:
+            title = f"Chapter {index + 1}"
+        out.append(TimelineMarker(time=t, name=title))
+
+    out.sort(key=lambda m: (m.time, m.name.lower()))
+    # Drop exact duplicate times (keep last name)
+    unique: list[TimelineMarker] = []
+    for marker in out:
+        if unique and abs(unique[-1].time - marker.time) < 0.001:
+            unique[-1] = marker
+        else:
+            unique.append(marker)
+    return unique
+
+
 def probe_mkv(path: Path | str) -> ProbeResult:
     """
-    Probe an MKV once: duration, all tracks, audio layouts.
+    Probe an MKV once: duration, all tracks, audio layouts, chapters.
 
     Raises ProbeError if the file is missing, not MKV, has no video, or fails.
     """
@@ -380,9 +432,17 @@ def probe_mkv(path: Path | str) -> ProbeResult:
         )
 
     format_name = str((info.get("format") or {}).get("format_name") or "matroska")
+    chapters = _chapters_from_info(info)
+    if chapters:
+        logger.info(
+            "Probed %d chapter(s) in %s",
+            len(chapters),
+            path.name,
+        )
     return ProbeResult(
         path=path,
         duration_seconds=_duration_from_info(info),
         tracks=_tracks_from_info(info),
         format_name=format_name,
+        chapters=chapters,
     )

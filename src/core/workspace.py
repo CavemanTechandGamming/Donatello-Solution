@@ -35,6 +35,8 @@ class WorkspaceState:
     track_edits: dict[str, dict[int, TrackEditState]] = field(default_factory=dict)
     # media path key → named markers (chapter points)
     markers: dict[str, list[TimelineMarker]] = field(default_factory=dict)
+    # media path key → audio stream_index → preview volume 0..2 (100% = 1.0)
+    audio_volumes: dict[str, dict[int, float]] = field(default_factory=dict)
 
 
 def _path_key(path: Path) -> str:
@@ -90,6 +92,13 @@ def state_to_dict(state: WorkspaceState) -> dict:
     for media_key, marks in state.markers.items():
         markers[media_key] = markers_to_list(marks)
 
+    audio_volumes: dict[str, dict[str, float]] = {}
+    for media_key, by_stream in state.audio_volumes.items():
+        audio_volumes[media_key] = {
+            str(stream_index): float(max(0.0, min(2.0, vol)))
+            for stream_index, vol in by_stream.items()
+        }
+
     return {
         "version": WORKSPACE_VERSION,
         "app": APP_NAME,
@@ -102,6 +111,7 @@ def state_to_dict(state: WorkspaceState) -> dict:
         "playhead": state.playhead,
         "track_edits": track_edits,
         "markers": markers,
+        "audio_volumes": audio_volumes,
     }
 
 
@@ -177,6 +187,30 @@ def state_from_dict(data: object) -> WorkspaceState:
             if str(media_key) != key:
                 markers_out[str(media_key)] = marks
 
+    volumes_out: dict[str, dict[int, float]] = {}
+    volumes_raw = data.get("audio_volumes") or {}
+    if isinstance(volumes_raw, dict):
+        for media_key, by_stream in volumes_raw.items():
+            if not isinstance(by_stream, dict):
+                continue
+            parsed: dict[int, float] = {}
+            for stream_key, vol in by_stream.items():
+                try:
+                    stream_index = int(stream_key)
+                    value = float(vol)
+                except (TypeError, ValueError):
+                    continue
+                parsed[stream_index] = max(0.0, min(2.0, value))
+            if not parsed:
+                continue
+            try:
+                key = _path_key(Path(str(media_key)))
+            except OSError:
+                key = str(media_key)
+            volumes_out[key] = parsed
+            if str(media_key) != key:
+                volumes_out[str(media_key)] = parsed
+
     return WorkspaceState(
         media=media,
         active=active,
@@ -187,6 +221,7 @@ def state_from_dict(data: object) -> WorkspaceState:
         playhead=_optional_float(data.get("playhead")),
         track_edits=edits_out,
         markers=markers_out,
+        audio_volumes=volumes_out,
     )
 
 

@@ -69,6 +69,8 @@ class PreviewPlayer:
         self._channels = 2
         self._audio_remainder: np.ndarray | None = None
         self._monitor_layout = "stereo"
+        self._volume = 1.0
+        self._audio_type_index = 0
 
     @property
     def path(self) -> Path | None:
@@ -93,6 +95,18 @@ class PreviewPlayer:
     @property
     def frame_duration(self) -> float:
         return self._frame_duration
+
+    @property
+    def volume(self) -> float:
+        return self._volume
+
+    def set_volume(self, volume: float) -> None:
+        """Monitor gain 0.0–2.0 (0%–200%). Soft-clips on output."""
+        self._volume = float(max(0.0, min(2.0, volume)))
+
+    def set_audio_type_index(self, type_index: int) -> None:
+        """Which audio stream (0-based among audio) the monitor plays."""
+        self._audio_type_index = max(0, int(type_index))
 
     def open(self, path: Path, duration: float | None = None) -> None:
         self.stop()
@@ -190,8 +204,10 @@ class PreviewPlayer:
         ):
             try:
                 with av.open(str(self._path)) as container:
-                    if container.streams.audio:
-                        audio = container.streams.audio[0]
+                    audios = list(container.streams.audio)
+                    if audios:
+                        idx = min(self._audio_type_index, len(audios) - 1)
+                        audio = audios[idx]
                         if audio.layout is not None:
                             source_layout = audio.layout.name
                             source_channels = int(audio.layout.nb_channels)
@@ -387,7 +403,11 @@ class PreviewPlayer:
         try:
             with av.open(str(path)) as container:
                 video = container.streams.video[0] if container.streams.video else None
-                audio = container.streams.audio[0] if container.streams.audio else None
+                audios = list(container.streams.audio)
+                audio = None
+                if audios:
+                    idx = min(self._audio_type_index, len(audios) - 1)
+                    audio = audios[idx]
                 if video is None:
                     self._emit_error("No video stream to preview.")
                     self._frame_queue.put(None)
@@ -513,6 +533,8 @@ class PreviewPlayer:
             arr = arr.astype(np.float32) / scale
         else:
             arr = np.asarray(arr, dtype=np.float32)
+        if self._volume != 1.0:
+            arr = arr * self._volume
         np.clip(arr, -1.0, 1.0, out=arr)
 
         # Prefer waiting over dropping — drops caused crackle/roughness.
