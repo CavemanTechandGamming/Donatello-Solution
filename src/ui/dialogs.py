@@ -179,7 +179,15 @@ def ask_string(
 
 
 class _AskYesNoDialog(ctk.CTkToplevel):
-    def __init__(self, master, title: str, message: str) -> None:
+    def __init__(
+        self,
+        master,
+        title: str,
+        message: str,
+        *,
+        ok_text: str = "OK",
+        ok_danger: bool = False,
+    ) -> None:
         super().__init__(master)
         self.title(title)
         self.minsize(360, 140)
@@ -222,14 +230,19 @@ class _AskYesNoDialog(ctk.CTkToplevel):
             hover_color=("gray60", "gray45"),
             command=self._no,
         ).pack(side="left", padx=(0, 8))
-        ctk.CTkButton(
-            btns,
-            text="Delete",
-            width=100,
-            fg_color="#8a2f2f",
-            hover_color="#5c1f1f",
-            command=self._yes,
-        ).pack(side="left")
+        if ok_danger:
+            ctk.CTkButton(
+                btns,
+                text=ok_text,
+                width=100,
+                fg_color="#8a2f2f",
+                hover_color="#5c1f1f",
+                command=self._yes,
+            ).pack(side="left")
+        else:
+            ctk.CTkButton(btns, text=ok_text, width=100, command=self._yes).pack(
+                side="left"
+            )
 
         self.bind("<Escape>", lambda _e: self._no())
         self.protocol("WM_DELETE_WINDOW", self._no)
@@ -254,7 +267,16 @@ class _AskYesNoDialog(ctk.CTkToplevel):
         self.destroy()
 
 
-def ask_yes_no(title: str, message: str, *, parent=None) -> bool:
-    dlg = _AskYesNoDialog(parent, title, message)
+def ask_yes_no(
+    title: str,
+    message: str,
+    *,
+    parent=None,
+    ok_text: str = "OK",
+    ok_danger: bool = False,
+) -> bool:
+    dlg = _AskYesNoDialog(
+        parent, title, message, ok_text=ok_text, ok_danger=ok_danger
+    )
     dlg.wait_window()
     return bool(dlg.result)

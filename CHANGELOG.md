@@ -18,12 +18,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Preview monitor audio: resample to float @ Settings sample rate; soft clip; Keep channels uses source layout when the device allows (else stereo fallback); Export never downmixes
 - **Razor** — split the timeline at the playhead (nothing deleted)
 - **Delete** — remove Mark In→Out from the timeline after confirm (all streams via EDL; Delete selected still bakes one V/A track)
-- Insert footage: Insert… at In/playhead (all streams); Insert selected… for one V/A track
+- **Insert (EDL)** — splice another MKV into the sequence at In/playhead without baking; multi-source preview; Export flattens
+- Project **bin → timeline** drag (and OS-drop onto the timeline) inserts at the drop/playhead point
+- Insert footage: Insert selected… still bakes one matching V/A track when the timeline is a single full clip
 - Rotating file log under `%APPDATA%\DonatelloSolution\donatello.log` (Settings → Open log file)
 - Workspace save/open: `.donatello` restores project panel, active clip, Mark In/Out, playhead, stream selection, track edits, markers, audio volumes, and timeline **sequence** (EDL)
 - Edit decision list (`src/core/sequence.py`): multi-segment timeline; Export flattens pending edits then remuxes
 - Single Export: remux with track metadata; named markers as MKV chapters; with Mark In/Out set, Export **keeps** that span (before In / after Out dropped)
-- Multi-lane timeline: one row per video / audio / subtitle; title above each bar; Sel / Edit on the lane; Streams panel removed; multi-rect segments; **drag to reorder** chunks
+- Multi-lane timeline: one row per video / audio / subtitle; title above each bar; Sel / Edit on the lane; Streams panel removed; multi-rect segments; **drag to reorder** chunks; **bin drop** onto lanes to insert
 - Audio volume 0%–200% in the audio Edit dialog (slider + typed percent); preview monitor gain; soft-clips peaks; persisted in the workspace
 - Marker strip (gold ticks + names); click a marker on the strip or lane to seek; transport **‹ M** / **M ›** for previous / next marker
 - Import MKV chapters as timeline markers on load (when the clip has none in the workspace yet)

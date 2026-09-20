@@ -250,21 +250,52 @@ class EditDecision:
         return None
 
     def resolve_playback(
-        self, source: Path, source_t: float
-    ) -> tuple[float, float] | None:
+        self, open_source: Path, source_t: float
+    ) -> tuple[Path, float, float] | None:
         """
-        During preview: if *source_t* is in a kept segment, return
-        ``(source_t, timeline_t)``. If it fell into a cut gap, snap to the
-        next segment ``(src_in, timeline_start)``. Past the end → ``None``.
+        During preview: return ``(media_path, source_time, timeline_time)``.
+
+        If *source_t* is past the end of the current segment on *open_source*,
+        snap to the next timeline segment (may be a different file).
+        Past the end of the sequence → ``None``.
         """
-        mapped = self.map_source_to_timeline(source, source_t)
-        if mapped is not None:
-            return (float(source_t), mapped)
-        for tl_start, _tl_end, seg in self.timeline_spans():
-            if not _same_source(seg.source, source):
+        source_t = float(source_t)
+        spans = self.timeline_spans()
+        if not spans:
+            return None
+
+        # Inside a segment of the open file?
+        for tl_start, tl_end, seg in spans:
+            if not _same_source(seg.source, open_source):
                 continue
-            if seg.src_in >= float(source_t) - 1e-4:
-                return (seg.src_in, tl_start)
+            if seg.src_in - 1e-4 <= source_t <= seg.src_out + 1e-4:
+                # Near segment end → advance to next piece
+                if (
+                    source_t >= seg.src_out - 0.05
+                    and tl_end < self.timeline_duration() - 1e-3
+                ):
+                    for ns, _ne, nseg in spans:
+                        if ns >= tl_end - 1e-4:
+                            return (nseg.source, nseg.src_in, ns)
+                tl = tl_start + max(0.0, source_t - seg.src_in)
+                return (seg.source, source_t, tl)
+
+        # Gap in this file (e.g. after Delete) — next segment of same source
+        for tl_start, _tl_end, seg in spans:
+            if not _same_source(seg.source, open_source):
+                continue
+            if seg.src_in >= source_t - 1e-4:
+                return (seg.source, seg.src_in, tl_start)
+
+        # Past this file's pieces — next timeline segment after last match
+        last_tl_end: float | None = None
+        for _tl_start, tl_end, seg in spans:
+            if _same_source(seg.source, open_source) and seg.src_out <= source_t + 1e-3:
+                last_tl_end = tl_end
+        if last_tl_end is not None:
+            for tl_start, _tl_end, seg in spans:
+                if tl_start >= last_tl_end - 1e-4:
+                    return (seg.source, seg.src_in, tl_start)
         return None
 
 

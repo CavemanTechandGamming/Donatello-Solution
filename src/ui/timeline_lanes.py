@@ -48,6 +48,7 @@ class TimelineLanes(ctk.CTkFrame):
         on_select: Callable[[int], None] | None = None,
         on_edit: Callable[[int], None] | None = None,
         on_segment_reorder: Callable[[int, int], None] | None = None,
+        on_media_drop: Callable[[float], bool] | None = None,
         **kwargs,
     ) -> None:
         super().__init__(master, fg_color="transparent", **kwargs)
@@ -55,6 +56,7 @@ class TimelineLanes(ctk.CTkFrame):
         self._on_select = on_select
         self._on_edit = on_edit
         self._on_segment_reorder = on_segment_reorder
+        self._on_media_drop = on_media_drop
 
         self._duration = 0.0
         self._position = 0.0
@@ -289,6 +291,13 @@ class TimelineLanes(ctk.CTkFrame):
 
     def _release_lane(self, event, canvas: tk.Canvas) -> None:
         canvas.configure(cursor="")
+        width = max(1, canvas.winfo_width())
+
+        # Bin → timeline drop (app owns drag state)
+        if self._drag_index is None and self._on_media_drop is not None:
+            if self._on_media_drop(self._x_to_time(event.x, width)):
+                return
+
         if self._drag_index is None:
             return
         from_i = self._drag_index
@@ -301,7 +310,6 @@ class TimelineLanes(ctk.CTkFrame):
         if not moved:
             # Treat as seek to click
             if self._on_seek is not None:
-                width = max(1, canvas.winfo_width())
                 self._on_seek(self._x_to_time(event.x, width))
             self._redraw_all()
             return

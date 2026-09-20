@@ -24,7 +24,7 @@ from src.core.logging_setup import get_logger, log_path
 from src.core.markers import TimelineMarker
 from src.core.preview import PreviewFrame, PreviewPlayer
 from src.core.probe import MediaTrack, ProbeError, ProbeResult, format_duration, probe_mkv
-from src.core.sequence import EditDecision
+from src.core.sequence import EditDecision, TimelineSegment
 from src.core.workspace import (
     WorkspaceError,
     WorkspaceState,
@@ -125,6 +125,10 @@ class DonatelloApp(ctk.CTk, TkinterDnD.DnDWrapper):
         self._markers: dict[str, list[TimelineMarker]] = {}
         self._audio_volumes: dict[str, dict[int, float]] = {}
         self._sequences: dict[str, EditDecision] = {}
+        self._preview_media_path: Path | None = None
+        self._bin_drag_path: Path | None = None
+        self._bin_drag_moved = False
+        self._bin_drag_origin: tuple[int, int] | None = None
         self._mark_in: float | None = None
         self._mark_out: float | None = None
         self._selected_stream_index: int | None = None
@@ -365,6 +369,7 @@ class DonatelloApp(ctk.CTk, TkinterDnD.DnDWrapper):
             on_select=self._select_stream,
             on_edit=self._edit_track,
             on_segment_reorder=self._on_segment_reorder,
+            on_media_drop=self._on_lane_media_drop,
         )
         self._lanes.grid(row=1, column=0, sticky="nsew", padx=16, pady=(0, 6))
 
@@ -451,7 +456,7 @@ class DonatelloApp(ctk.CTk, TkinterDnD.DnDWrapper):
             ins_row, text="Insert", width=86, command=lambda: self._do_insert(False)
         )
         btn_ins.pack(side="left", padx=(0, 4))
-        tip(btn_ins, "Insert", "Splice another MKV in at In (or the playhead).")
+        tip(btn_ins, "Insert", "Splice another MKV into the timeline at In (or playhead).")
 
         btn_ins_sel = ctk.CTkButton(
             ins_row,
@@ -463,7 +468,7 @@ class DonatelloApp(ctk.CTk, TkinterDnD.DnDWrapper):
         tip(
             btn_ins_sel,
             "Insert selected",
-            "Insert one matching video/audio stream only.",
+            "Insert one matching video/audio stream only (bakes a new file).",
         )
 
         self._marks_label = ctk.CTkLabel(
@@ -495,8 +500,49 @@ class DonatelloApp(ctk.CTk, TkinterDnD.DnDWrapper):
                 parent=self,
             )
             return
-        if mkvs:
-            self.import_paths(mkvs, load_first_if_empty=True)
+        if not mkvs:
+            return
+
+        on_timeline = self._drop_is_on_timeline(event)
+        if on_timeline and self._active_path is not None and self._result is not None:
+            self.import_paths(mkvs, load_first_if_empty=False)
+            at = self._insert_point()
+            inserted = 0
+            for path in mkvs:
+                if not self._insert_clip_into_edl(path, at, quiet=True):
+                    break
+                inserted += 1
+                try:
+                    dur = probe_mkv(path).duration_seconds or 0.0
+                except ProbeError:
+                    dur = 0.0
+                at += max(0.0, float(dur))
+            self._sync_scrubber_duration()
+            self._refresh_timeline_lanes()
+            if inserted:
+                dialogs.show_info(
+                    "Inserted on timeline",
+                    f"Added {inserted} clip(s) into the sequence.",
+                    parent=self,
+                )
+            return
+
+        self.import_paths(mkvs, load_first_if_empty=True)
+
+    def _drop_is_on_timeline(self, event) -> bool:
+        """True when the OS drop landed on the timeline / lane strip."""
+        try:
+            w = self.winfo_containing(event.x_root, event.y_root)
+        except Exception:
+            w = getattr(event, "widget", None)
+        cur = w
+        for _ in range(20):
+            if cur is None:
+                break
+            if cur is getattr(self, "_lanes", None):
+                return True
+            cur = getattr(cur, "master", None)
+        return False
 
     def _parse_drop_data(self, data: str) -> list[Path]:
         try:
@@ -545,11 +591,112 @@ class DonatelloApp(ctk.CTk, TkinterDnD.DnDWrapper):
                 hover_color=("gray70", "gray30"),
                 text_color=("gray10", "gray90"),
                 font=ctk.CTkFont(size=12),
-                command=lambda p=item.path: self.load_mkv(p),
+                command=lambda: None,
             )
             btn.grid(row=row, column=0, sticky="ew", padx=2, pady=2)
-            tip(btn, item.path.name, "Load this clip on the timeline.")
+            tip(
+                btn,
+                item.path.name,
+                "Click to load. Drag onto the timeline to insert at drop point.",
+            )
+            btn.bind(
+                "<ButtonPress-1>",
+                lambda e, p=item.path: self._bin_drag_start(e, p),
+                add="+",
+            )
+            btn.bind("<B1-Motion>", self._bin_drag_motion, add="+")
+            btn.bind(
+                "<ButtonRelease-1>",
+                lambda e, p=item.path: self._bin_drag_release(e, p),
+                add="+",
+            )
             self._item_buttons[key] = btn
+
+    def _bin_drag_start(self, event, path: Path) -> None:
+        self._bin_drag_path = path
+        self._bin_drag_moved = False
+        self._bin_drag_origin = (int(event.x_root), int(event.y_root))
+
+    def _bin_drag_motion(self, event) -> None:
+        if self._bin_drag_path is None or self._bin_drag_origin is None:
+            return
+        dx = abs(int(event.x_root) - self._bin_drag_origin[0])
+        dy = abs(int(event.y_root) - self._bin_drag_origin[1])
+        if dx > 8 or dy > 8:
+            self._bin_drag_moved = True
+            try:
+                self.configure(cursor="fleur")
+            except Exception:
+                pass
+
+    def _bin_drag_release(self, event, path: Path) -> None:
+        moved = self._bin_drag_moved
+        drag_path = self._bin_drag_path or path
+        # If lane release already consumed the drop, drag was cleared
+        if self._bin_drag_path is None and moved:
+            try:
+                self.configure(cursor="")
+            except Exception:
+                pass
+            return
+        self._clear_bin_drag()
+        if not moved:
+            self.load_mkv(path)
+            return
+        # Dropped somewhere: if over lanes, insert at that time
+        try:
+            w = self.winfo_containing(event.x_root, event.y_root)
+        except Exception:
+            w = None
+        over_lanes = False
+        cur = w
+        for _ in range(16):
+            if cur is None:
+                break
+            if cur is self._lanes:
+                over_lanes = True
+                break
+            cur = getattr(cur, "master", None)
+        if over_lanes and self._active_path is not None:
+            at = self._playhead_timeline()
+            for canvas in getattr(self._lanes, "_canvases", []):
+                try:
+                    cx = canvas.winfo_rootx()
+                    cy = canvas.winfo_rooty()
+                    cw = canvas.winfo_width()
+                    ch = canvas.winfo_height()
+                except Exception:
+                    continue
+                if cx <= event.x_root <= cx + cw and cy <= event.y_root <= cy + ch:
+                    local_x = event.x_root - cx
+                    at = self._lanes._x_to_time(local_x, max(1, cw))
+                    break
+            self._insert_clip_into_edl(drag_path, at)
+        elif self._active_path is not None and dialogs.ask_yes_no(
+            "Insert at playhead?",
+            f"Insert “{drag_path.name}” at the playhead "
+            f"({format_duration(self._playhead_timeline())})?",
+            parent=self,
+            ok_text="Insert",
+        ):
+            self._insert_clip_into_edl(drag_path, self._playhead_timeline())
+
+    def _clear_bin_drag(self) -> None:
+        self._bin_drag_path = None
+        self._bin_drag_moved = False
+        self._bin_drag_origin = None
+        try:
+            self.configure(cursor="")
+        except Exception:
+            pass
+
+    def _on_lane_media_drop(self, timeline_t: float) -> bool:
+        """Called from lane release when a bin drag is in progress."""
+        if self._bin_drag_path is None or not self._bin_drag_moved:
+            return False
+        path = self._bin_drag_path
+        self._clear_bin_drag()
+        return self._insert_clip_into_edl(path, timeline_t)
 
     def import_mkv_dialog(self) -> None:
         paths = filedialog.askopenfilenames(
@@ -1038,6 +1185,7 @@ class DonatelloApp(ctk.CTk, TkinterDnD.DnDWrapper):
 
     def _reset_preview_ui(self) -> None:
         self._player.close()
+        self._preview_media_path = None
         self._preview_image = None
         self._last_pil = None
         self._preview_label.configure(image=None, text="")
@@ -1051,6 +1199,7 @@ class DonatelloApp(ctk.CTk, TkinterDnD.DnDWrapper):
     def _open_preview(self, result: ProbeResult) -> None:
         file_duration = result.duration_seconds or 0.0
         self._player.open(result.path, file_duration if file_duration > 0 else None)
+        self._preview_media_path = result.path
         timeline_dur = self._timeline_duration()
         scrub_to = max(timeline_dur if timeline_dur > 0 else file_duration, 0.1)
         self._scrub.configure(state="normal", to=scrub_to)
@@ -1062,6 +1211,33 @@ class DonatelloApp(ctk.CTk, TkinterDnD.DnDWrapper):
             text=f"0:00 / {format_duration(timeline_dur if timeline_dur > 0 else file_duration)}"
         )
         self._refresh_skip_button_labels()
+
+    def _ensure_preview_source(self, path: Path) -> bool:
+        """Open *path* in the preview player if it is not already open."""
+        try:
+            want = _path_key(path)
+        except OSError:
+            want = str(path)
+        if self._preview_media_path is not None:
+            try:
+                if _path_key(self._preview_media_path) == want:
+                    return True
+            except OSError:
+                if str(self._preview_media_path) == str(path):
+                    return True
+        try:
+            result = probe_mkv(path)
+        except ProbeError as exc:
+            logger.error("Could not open preview source %s: %s", path, exc)
+            return False
+        was_playing = self._player.playing
+        dur = result.duration_seconds or 0.0
+        self._player.open(result.path, dur if dur > 0 else None)
+        self._preview_media_path = result.path
+        if was_playing:
+            self._player.play()
+            self._play_btn.configure(text="Pause")
+        return True
 
     def _timeline_duration(self) -> float:
         edl = self._active_sequence()
@@ -1083,6 +1259,9 @@ class DonatelloApp(ctk.CTk, TkinterDnD.DnDWrapper):
             self._active_path, float(self._result.duration_seconds or 0.0)
         )
 
+    def _preview_open_path(self) -> Path | None:
+        return self._preview_media_path or self._active_path
+
     def _playhead_timeline(self) -> float:
         if self._active_path is None:
             return 0.0
@@ -1090,24 +1269,28 @@ class DonatelloApp(ctk.CTk, TkinterDnD.DnDWrapper):
         if self._edl_is_identity():
             return src_t
         edl = self._active_sequence()
-        if edl is None:
+        open_path = self._preview_open_path()
+        if edl is None or open_path is None:
             return src_t
-        resolved = edl.resolve_playback(self._active_path, src_t)
+        resolved = edl.resolve_playback(open_path, src_t)
         if resolved is None:
             return edl.timeline_duration()
-        return resolved[1]
+        return resolved[2]
 
     def _seek_timeline(self, timeline_t: float) -> None:
         if self._active_path is None:
             return
         edl = self._active_sequence()
         if edl is None or self._edl_is_identity():
+            self._ensure_preview_source(self._active_path)
             self._player.show_frame_at(max(0.0, float(timeline_t)))
             return
         mapped = edl.map_timeline_to_source(float(timeline_t))
         if mapped is None:
             return
-        _source, src_t = mapped
+        source, src_t = mapped
+        if not self._ensure_preview_source(source):
+            return
         self._player.show_frame_at(src_t)
 
     def _sync_scrubber_duration(self) -> None:
@@ -1259,21 +1442,26 @@ class DonatelloApp(ctk.CTk, TkinterDnD.DnDWrapper):
     def _on_preview_position(self, seconds: float) -> None:
         tl_dur = self._timeline_duration()
         display_t = float(seconds)
-        if (
-            self._active_path is not None
-            and not self._edl_is_identity()
-        ):
+        if self._active_path is not None and not self._edl_is_identity():
             edl = self._active_sequence()
-            if edl is not None:
-                resolved = edl.resolve_playback(self._active_path, float(seconds))
+            open_path = self._preview_open_path()
+            if edl is not None and open_path is not None:
+                resolved = edl.resolve_playback(open_path, float(seconds))
                 if resolved is None:
                     self._player.pause()
                     self._play_btn.configure(text="Play")
                     display_t = tl_dur
                 else:
-                    src_t, display_t = resolved
-                    if abs(src_t - float(seconds)) > 0.05:
+                    media_path, src_t, display_t = resolved
+                    need_switch = False
+                    try:
+                        need_switch = _path_key(media_path) != _path_key(open_path)
+                    except OSError:
+                        need_switch = str(media_path) != str(open_path)
+                    if need_switch or abs(src_t - float(seconds)) > 0.05:
                         was_playing = self._player.playing
+                        if not self._ensure_preview_source(media_path):
+                            return
                         self._player.show_frame_at(src_t)
                         if was_playing:
                             self._player.play()
@@ -1709,6 +1897,8 @@ class DonatelloApp(ctk.CTk, TkinterDnD.DnDWrapper):
             "This does not change Mark In/Out’s meaning for Export — "
             "it removes that span from the sequence.",
             parent=self,
+            ok_text="Delete",
+            ok_danger=True,
         )
         if not confirmed:
             return
@@ -1889,73 +2079,85 @@ class DonatelloApp(ctk.CTk, TkinterDnD.DnDWrapper):
 
     def _do_insert(self, single_stream: bool) -> None:
         if self._active_path is None or self._result is None:
-            dialogs.show_warning("Insert", "Load a base clip onto the timeline first.", parent=self)
-            return
-
-        if not self._edl_is_identity():
             dialogs.show_warning(
-                "Insert",
-                "The timeline has pending Razor/Delete edits.\n\n"
-                "Export (to bake) before Insert.",
-                parent=self,
+                "Insert", "Load a base clip onto the timeline first.", parent=self
             )
             return
 
         insert_path = self._pick_insert_source()
         if insert_path is None:
             return
+
+        at = self._insert_point()
+
+        # All-streams Insert → EDL (non-destructive)
+        if not single_stream:
+            if self._insert_clip_into_edl(insert_path, at):
+                dialogs.show_info(
+                    "Insert complete",
+                    f"Inserted “{insert_path.name}” at {format_duration(at)}.\n\n"
+                    "Export will bake the sequence to a new MKV.",
+                    parent=self,
+                )
+            return
+
+        # Insert selected still bakes — require a simple identity timeline
+        if not self._edl_is_identity():
+            dialogs.show_warning(
+                "Insert selected",
+                "The timeline has pending Razor/Delete/Insert edits.\n\n"
+                "Export (to bake) before Insert selected.",
+                parent=self,
+            )
+            return
+
         if _path_key(insert_path) == _path_key(self._active_path):
             dialogs.show_warning(
-                "Insert",
+                "Insert selected",
                 "Pick a different clip than the one already on the timeline.",
                 parent=self,
             )
             return
 
-        at = self._insert_point()
-        selected_base = None
-        selected_ins = None
-        if single_stream:
-            if self._selected_stream_index is None:
-                dialogs.show_warning(
-                    "Insert selected",
-                    "Select a video or audio stream on the base clip first.",
-                    parent=self,
-                )
-                return
-            selected_base = next(
-                (
-                    t
-                    for t in self._result.tracks
-                    if t.stream_index == self._selected_stream_index
-                ),
-                None,
+        if self._selected_stream_index is None:
+            dialogs.show_warning(
+                "Insert selected",
+                "Select a video or audio stream on the base clip first.",
+                parent=self,
             )
-            if selected_base is None or selected_base.kind not in ("video", "audio"):
-                dialogs.show_warning(
-                    "Insert selected",
-                    "Select a video or audio stream (not subtitle).",
-                    parent=self,
-                )
-                return
-            try:
-                ins_probe = probe_mkv(insert_path)
-            except ProbeError as exc:
-                _show_error("Insert", str(exc), parent=self, exc=exc)
-                return
-            selected_ins = next(
-                (t for t in ins_probe.tracks if t.kind == selected_base.kind),
-                None,
+            return
+        selected_base = next(
+            (
+                t
+                for t in self._result.tracks
+                if t.stream_index == self._selected_stream_index
+            ),
+            None,
+        )
+        if selected_base is None or selected_base.kind not in ("video", "audio"):
+            dialogs.show_warning(
+                "Insert selected",
+                "Select a video or audio stream (not subtitle).",
+                parent=self,
             )
-            if selected_ins is None:
-                _show_error(
-                    "Insert selected",
-                    f"Insert clip has no {selected_base.kind} stream.",
-                    parent=self,
-                )
-                return
+            return
+        try:
+            ins_probe = probe_mkv(insert_path)
+        except ProbeError as exc:
+            _show_error("Insert", str(exc), parent=self, exc=exc)
+            return
+        selected_ins = next(
+            (t for t in ins_probe.tracks if t.kind == selected_base.kind),
+            None,
+        )
+        if selected_ins is None:
+            _show_error(
+                "Insert selected",
+                f"Insert clip has no {selected_base.kind} stream.",
+                parent=self,
+            )
+            return
 
-        # Ensure insert clip is in the project bin
         self.import_paths([insert_path], load_first_if_empty=False)
 
         stem = self._active_path.stem
@@ -1965,10 +2167,8 @@ class DonatelloApp(ctk.CTk, TkinterDnD.DnDWrapper):
         edits = list(edits_map.values())
         audio_tracks = [t for t in self._result.tracks if t.kind == "audio"]
 
-        mode = "selected track" if single_stream else "all streams"
         logger.info(
-            "Insert %s: base=%s insert=%s at=%.3f → %s",
-            mode,
+            "Insert selected: base=%s insert=%s at=%.3f → %s",
             self._active_path.name,
             insert_path.name,
             at,
@@ -1992,11 +2192,82 @@ class DonatelloApp(ctk.CTk, TkinterDnD.DnDWrapper):
 
         dialogs.show_info(
             "Insert complete",
-            f"Inserted at {format_duration(at)} ({mode}).\n\nSaved:\n{out_path}",
+            f"Inserted at {format_duration(at)} (selected track).\n\nSaved:\n{out_path}",
             parent=self,
         )
         self.import_paths([out_path], load_first_if_empty=False)
         self.load_mkv(out_path)
+
+    def _insert_clip_into_edl(
+        self, insert_path: Path, at: float, *, quiet: bool = False
+    ) -> bool:
+        """Splice *insert_path* into the active EDL at timeline *at*. Returns success."""
+        if self._active_path is None or self._result is None:
+            if not quiet:
+                dialogs.show_warning(
+                    "Insert", "Load a base clip onto the timeline first.", parent=self
+                )
+            return False
+        try:
+            ins_probe = probe_mkv(insert_path)
+        except ProbeError as exc:
+            if not quiet:
+                _show_error("Insert", str(exc), parent=self, exc=exc)
+            return False
+        dur = float(ins_probe.duration_seconds or 0.0)
+        if dur <= 0.05:
+            if not quiet:
+                dialogs.show_warning(
+                    "Insert", "Insert clip has no usable duration.", parent=self
+                )
+            return False
+
+        self.import_paths([insert_path], load_first_if_empty=False)
+        key = _path_key(self._active_path)
+        edl = self._ensure_sequence(self._result)
+        piece = TimelineSegment(
+            source=ins_probe.path, src_in=0.0, src_out=dur
+        )
+        at = max(0.0, min(float(at), edl.timeline_duration()))
+        new_edl = edl.insert_at(at, piece)
+        self._sequences[key] = new_edl
+        self._remap_markers_after_insert(key, at, dur)
+        self._remap_marks_after_insert(at, dur)
+        logger.info(
+            "EDL insert: %s into %s at %.3f (dur %.3f) → %d segments",
+            insert_path.name,
+            self._active_path.name,
+            at,
+            dur,
+            len(new_edl.segments),
+        )
+        self._sync_scrubber_duration()
+        self._refresh_timeline_lanes()
+        self._seek_timeline(at)
+        return True
+
+    def _remap_markers_after_insert(self, key: str, at: float, duration: float) -> None:
+        marks = list(self._markers.get(key) or [])
+        if not marks or duration <= 0:
+            return
+        shifted: list[TimelineMarker] = []
+        for mark in marks:
+            if mark.time >= at - 1e-6:
+                shifted.append(
+                    TimelineMarker(time=mark.time + duration, name=mark.name)
+                )
+            else:
+                shifted.append(mark)
+        self._markers[key] = shifted
+
+    def _remap_marks_after_insert(self, at: float, duration: float) -> None:
+        if duration <= 0:
+            return
+        if self._mark_in is not None and self._mark_in >= at - 1e-6:
+            self._mark_in += duration
+        if self._mark_out is not None and self._mark_out >= at - 1e-6:
+            self._mark_out += duration
+        self._update_marks_label()
 
     def _edit_track(self, stream_index: int) -> None:
         if self._result is None or self._active_path is None:
