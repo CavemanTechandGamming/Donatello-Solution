@@ -176,3 +176,85 @@ def ask_string(
     dlg = _AskStringDialog(parent, title, prompt, initialvalue=initialvalue)
     dlg.wait_window()
     return dlg.result
+
+
+class _AskYesNoDialog(ctk.CTkToplevel):
+    def __init__(self, master, title: str, message: str) -> None:
+        super().__init__(master)
+        self.title(title)
+        self.minsize(360, 140)
+        self.resizable(True, False)
+        if master is not None:
+            self.transient(master)
+        self.grab_set()
+        self.focus_set()
+        self.result = False
+
+        self.grid_columnconfigure(0, weight=1)
+        self.grid_rowconfigure(0, weight=1)
+
+        body = ctk.CTkFrame(self, fg_color="transparent")
+        body.grid(row=0, column=0, sticky="nsew", padx=18, pady=(16, 8))
+        body.grid_columnconfigure(0, weight=1)
+
+        ctk.CTkLabel(
+            body,
+            text=title,
+            font=ctk.CTkFont(size=14, weight="bold"),
+            anchor="w",
+        ).grid(row=0, column=0, sticky="ew", pady=(0, 8))
+        ctk.CTkLabel(
+            body,
+            text=message,
+            anchor="w",
+            justify="left",
+            wraplength=420,
+            text_color=("gray30", "gray70"),
+        ).grid(row=1, column=0, sticky="ew")
+
+        btns = ctk.CTkFrame(self, fg_color="transparent")
+        btns.grid(row=1, column=0, sticky="e", padx=18, pady=(4, 16))
+        ctk.CTkButton(
+            btns,
+            text="Cancel",
+            width=100,
+            fg_color=("gray70", "gray35"),
+            hover_color=("gray60", "gray45"),
+            command=self._no,
+        ).pack(side="left", padx=(0, 8))
+        ctk.CTkButton(
+            btns,
+            text="Delete",
+            width=100,
+            fg_color="#8a2f2f",
+            hover_color="#5c1f1f",
+            command=self._yes,
+        ).pack(side="left")
+
+        self.bind("<Escape>", lambda _e: self._no())
+        self.protocol("WM_DELETE_WINDOW", self._no)
+        self.update_idletasks()
+        w = max(380, min(520, self.winfo_reqwidth() + 24))
+        h = max(160, self.winfo_reqheight() + 8)
+        self.geometry(f"{w}x{h}")
+
+    def _yes(self) -> None:
+        self.result = True
+        self._finish()
+
+    def _no(self) -> None:
+        self.result = False
+        self._finish()
+
+    def _finish(self) -> None:
+        try:
+            self.grab_release()
+        except Exception:
+            pass
+        self.destroy()
+
+
+def ask_yes_no(title: str, message: str, *, parent=None) -> bool:
+    dlg = _AskYesNoDialog(parent, title, message)
+    dlg.wait_window()
+    return bool(dlg.result)

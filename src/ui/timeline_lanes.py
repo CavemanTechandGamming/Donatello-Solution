@@ -18,6 +18,12 @@ _LANE_COLORS = {
     "subtitle": "#8a6a2d",
     "other": "#555555",
 }
+_LANE_COLORS_ALT = {
+    "video": "#185a8c",
+    "audio": "#247a52",
+    "subtitle": "#755a24",
+    "other": "#444444",
+}
 _LANE_HEIGHT = 26
 _HEADER_WIDTH = 56
 _MARKER_STRIP_HEIGHT = 22
@@ -41,12 +47,14 @@ class TimelineLanes(ctk.CTkFrame):
         on_seek: Callable[[float], None] | None = None,
         on_select: Callable[[int], None] | None = None,
         on_edit: Callable[[int], None] | None = None,
+        on_segment_reorder: Callable[[int, int], None] | None = None,
         **kwargs,
     ) -> None:
         super().__init__(master, fg_color="transparent", **kwargs)
         self._on_seek = on_seek
         self._on_select = on_select
         self._on_edit = on_edit
+        self._on_segment_reorder = on_segment_reorder
 
         self._duration = 0.0
         self._position = 0.0
@@ -57,6 +65,15 @@ class TimelineLanes(ctk.CTkFrame):
         self._lanes: list[LaneTrack] = []
         self._canvases: list[tk.Canvas] = []
         self._marker_canvas: tk.Canvas | None = None
+        # Timeline (start, end) spans for EDL segments; empty → one full-width bar
+        self._segment_spans: list[tuple[float, float]] = []
+        # Segment drag state
+        self._drag_index: int | None = None
+        self._drag_origin_x: float = 0.0
+        self._drag_grab_offset: float = 0.0  # seconds from segment start to click
+        self._drag_current_t: float = 0.0
+        self._drag_moved: bool = False
+        self._drag_canvas: tk.Canvas | None = None
 
         self.grid_columnconfigure(0, weight=1)
         self.grid_rowconfigure(2, weight=1)
@@ -118,6 +135,10 @@ class TimelineLanes(ctk.CTkFrame):
         self._mark_out = None
         self._markers = []
         self._selected_stream = None
+        self._segment_spans = []
+        self._drag_index = None
+        self._drag_moved = False
+        self._drag_canvas = None
         for child in self._scroll.winfo_children():
             child.destroy()
         self._empty = ctk.CTkLabel(
@@ -140,6 +161,7 @@ class TimelineLanes(ctk.CTkFrame):
         mark_out: float | None = None,
         markers: list[TimelineMarker] | None = None,
         position: float = 0.0,
+        segment_spans: list[tuple[float, float]] | None = None,
     ) -> None:
         self._lanes = list(lanes)
         self._duration = max(0.0, float(duration))
@@ -148,6 +170,14 @@ class TimelineLanes(ctk.CTkFrame):
         self._mark_out = mark_out
         self._markers = list(markers or [])
         self._position = max(0.0, float(position))
+        if segment_spans:
+            self._segment_spans = [
+                (max(0.0, float(a)), max(0.0, float(b)))
+                for a, b in segment_spans
+                if float(b) > float(a)
+            ]
+        else:
+            self._segment_spans = []
         self._rebuild()
 
     def set_position(self, seconds: float) -> None:
@@ -172,6 +202,23 @@ class TimelineLanes(ctk.CTkFrame):
             return pad
         return pad + (time / self._duration) * (width - 2 * pad)
 
+    def _x_to_time(self, x: float, width: int, *, pad: int = 2) -> float:
+        if self._duration <= 0:
+            return 0.0
+        track_w = max(1.0, float(width - 2 * pad))
+        ratio = min(1.0, max(0.0, (float(x) - pad) / track_w))
+        return ratio * self._duration
+
+    def _hit_segment(self, x: float, width: int) -> int | None:
+        """Return segment index under *x*, or None."""
+        if self._duration <= 0 or len(self._segment_spans) < 2:
+            return None
+        t = self._x_to_time(x, width)
+        for i, (tl_start, tl_end) in enumerate(self._segment_spans):
+            if tl_start - 1e-6 <= t <= tl_end + 1e-6:
+                return i
+        return None
+
     def _hit_marker(self, x: float, width: int) -> TimelineMarker | None:
         if self._duration <= 0 or not self._markers:
             return None
@@ -193,19 +240,76 @@ class TimelineLanes(ctk.CTkFrame):
         if hit is not None:
             self._on_seek(hit.time)
             return
-        ratio = min(1.0, max(0.0, event.x / float(width)))
-        self._on_seek(ratio * self._duration)
+        self._on_seek(self._x_to_time(event.x, width))
 
-    def _click_seek(self, event, canvas: tk.Canvas) -> None:
-        if self._duration <= 0 or self._on_seek is None:
+    def _press_lane(self, event, canvas: tk.Canvas) -> None:
+        if self._duration <= 0:
             return
         width = max(1, canvas.winfo_width())
-        hit = self._hit_marker(event.x, width)
-        if hit is not None:
-            self._on_seek(hit.time)
+        hit_mark = self._hit_marker(event.x, width)
+        if hit_mark is not None:
+            self._drag_index = None
+            if self._on_seek:
+                self._on_seek(hit_mark.time)
             return
-        ratio = min(1.0, max(0.0, event.x / float(width)))
-        self._on_seek(ratio * self._duration)
+
+        seg_i = self._hit_segment(event.x, width)
+        if seg_i is not None and self._on_segment_reorder is not None:
+            tl_start, _tl_end = self._segment_spans[seg_i]
+            t = self._x_to_time(event.x, width)
+            self._drag_index = seg_i
+            self._drag_origin_x = float(event.x)
+            self._drag_grab_offset = max(0.0, t - tl_start)
+            self._drag_current_t = tl_start
+            self._drag_moved = False
+            self._drag_canvas = canvas
+            canvas.configure(cursor="fleur")
+            return
+
+        # Single-bar or no reorder: seek
+        self._drag_index = None
+        if self._on_seek:
+            self._on_seek(self._x_to_time(event.x, width))
+
+    def _motion_lane(self, event, canvas: tk.Canvas) -> None:
+        if self._drag_index is None or self._duration <= 0:
+            return
+        width = max(1, canvas.winfo_width())
+        if abs(float(event.x) - self._drag_origin_x) > 4:
+            self._drag_moved = True
+        t = self._x_to_time(event.x, width)
+        seg_i = self._drag_index
+        tl_start, tl_end = self._segment_spans[seg_i]
+        seg_dur = max(0.0, tl_end - tl_start)
+        # Proposed left edge = click time - grab offset
+        left = t - self._drag_grab_offset
+        left = max(0.0, min(left, max(0.0, self._duration - seg_dur)))
+        self._drag_current_t = left
+        self._redraw_all()
+
+    def _release_lane(self, event, canvas: tk.Canvas) -> None:
+        canvas.configure(cursor="")
+        if self._drag_index is None:
+            return
+        from_i = self._drag_index
+        moved = self._drag_moved
+        drop_t = self._drag_current_t
+        self._drag_index = None
+        self._drag_moved = False
+        self._drag_canvas = None
+
+        if not moved:
+            # Treat as seek to click
+            if self._on_seek is not None:
+                width = max(1, canvas.winfo_width())
+                self._on_seek(self._x_to_time(event.x, width))
+            self._redraw_all()
+            return
+
+        if self._on_segment_reorder is not None:
+            self._on_segment_reorder(from_i, drop_t)
+        else:
+            self._redraw_all()
 
     def _draw_marker_strip(self) -> None:
         canvas = self._marker_canvas
@@ -303,7 +407,7 @@ class TimelineLanes(ctk.CTkFrame):
                 command=lambda s=track.stream_index: self._select(s),
             )
             btn_sel.pack(pady=(0, 2))
-            tip(btn_sel, "Select", "Select this stream for Cut/Insert selected.")
+            tip(btn_sel, "Select", "Select this stream for Delete/Insert selected.")
 
             if track.kind in ("video", "audio", "subtitle"):
                 edit_tip = (
@@ -345,7 +449,9 @@ class TimelineLanes(ctk.CTkFrame):
             )
             canvas.grid(row=1, column=0, sticky="ew")
             canvas.bind("<Configure>", lambda e, c=canvas: self._draw_lane(c))
-            canvas.bind("<Button-1>", lambda e, c=canvas: self._click_seek(e, c))
+            canvas.bind("<ButtonPress-1>", lambda e, c=canvas: self._press_lane(e, c))
+            canvas.bind("<B1-Motion>", lambda e, c=canvas: self._motion_lane(e, c))
+            canvas.bind("<ButtonRelease-1>", lambda e, c=canvas: self._release_lane(e, c))
             self._canvases.append(canvas)
 
         self.after_idle(self._redraw_all)
@@ -371,18 +477,88 @@ class TimelineLanes(ctk.CTkFrame):
 
         lane = self._lanes[idx]
         color = _LANE_COLORS.get(lane.track.kind, _LANE_COLORS["other"])
+        color_alt = _LANE_COLORS_ALT.get(lane.track.kind, _LANE_COLORS_ALT["other"])
         selected = lane.track.stream_index == self._selected_stream
+        outline = "#4a9fd8" if selected else "#333333"
+        outline_w = 2 if selected else 1
 
         pad = 2
-        canvas.create_rectangle(
-            pad,
-            pad,
-            width - pad,
-            height - pad,
-            fill=color,
-            outline="#4a9fd8" if selected else "#333333",
-            width=2 if selected else 1,
-        )
+        spans = self._segment_spans
+        if self._duration > 0 and len(spans) >= 2:
+            # Multi-chunk EDL: one rect per segment (butted; alternating shade)
+            track_w = width - 2 * pad
+            for i, (tl_start, tl_end) in enumerate(spans):
+                if self._drag_index is not None and i == self._drag_index and self._drag_moved:
+                    # Dim the home slot while dragging
+                    x0 = pad + (tl_start / self._duration) * track_w
+                    x1 = pad + (tl_end / self._duration) * track_w
+                    canvas.create_rectangle(
+                        x0,
+                        pad,
+                        max(x0 + 1, x1),
+                        height - pad,
+                        fill="#2a2a2a",
+                        outline="#444444",
+                        width=1,
+                        dash=(3, 2),
+                    )
+                    continue
+                x0 = pad + (tl_start / self._duration) * track_w
+                x1 = pad + (tl_end / self._duration) * track_w
+                if x1 - x0 < 1:
+                    x1 = x0 + 1
+                fill = color if i % 2 == 0 else color_alt
+                canvas.create_rectangle(
+                    x0,
+                    pad,
+                    x1,
+                    height - pad,
+                    fill=fill,
+                    outline="#1a1a1a",
+                    width=1,
+                )
+            # Ghost of the dragged segment
+            if (
+                self._drag_index is not None
+                and self._drag_moved
+                and 0 <= self._drag_index < len(spans)
+            ):
+                tl_start, tl_end = spans[self._drag_index]
+                seg_dur = max(0.0, tl_end - tl_start)
+                left = self._drag_current_t
+                x0 = pad + (left / self._duration) * track_w
+                x1 = pad + ((left + seg_dur) / self._duration) * track_w
+                if x1 - x0 < 1:
+                    x1 = x0 + 1
+                canvas.create_rectangle(
+                    x0,
+                    pad,
+                    x1,
+                    height - pad,
+                    fill=color,
+                    outline="#e6c35c",
+                    width=2,
+                )
+            # Outer selection outline
+            canvas.create_rectangle(
+                pad,
+                pad,
+                width - pad,
+                height - pad,
+                fill="",
+                outline=outline,
+                width=outline_w,
+            )
+        else:
+            canvas.create_rectangle(
+                pad,
+                pad,
+                width - pad,
+                height - pad,
+                fill=color,
+                outline=outline,
+                width=outline_w,
+            )
 
         if (
             self._duration > 0

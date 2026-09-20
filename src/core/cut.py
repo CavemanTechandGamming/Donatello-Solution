@@ -339,3 +339,48 @@ def perform_cut(
         "Single-stream subtitle cut is not supported yet. "
         "Use Cut without Ctrl (all streams), or select a video/audio track."
     )
+
+
+def flatten_edit_decision(
+    edl: "EditDecision",
+    output: Path,
+    *,
+    edits: list[TrackEditState] | None = None,
+) -> None:
+    """Bake an EDL to a single MKV (stream-copy segments + concat)."""
+    from src.core.sequence import EditDecision  # local import avoids cycles
+
+    if not isinstance(edl, EditDecision):
+        raise CutError("Invalid edit decision.")
+    if not edl.segments:
+        raise CutError("Edit decision has no segments to flatten.")
+
+    output = Path(output).expanduser().resolve()
+    if output.suffix.lower() != ".mkv":
+        raise CutError("Flatten output must be an .mkv file.")
+    output.parent.mkdir(parents=True, exist_ok=True)
+    ff = _ffmpeg()
+
+    with tempfile.TemporaryDirectory(prefix="donatello-flatten-") as tmp:
+        tmp_path = Path(tmp)
+        parts: list[Path] = []
+        for i, seg in enumerate(edl.segments):
+            source = Path(seg.source).expanduser().resolve()
+            if not source.is_file():
+                raise CutError(f"Segment source not found: {source}")
+            if source == output:
+                raise CutError("Flatten output must differ from segment sources.")
+            part = tmp_path / f"part{i:04d}.mkv"
+            _extract_segment(
+                ff,
+                source,
+                part,
+                start=seg.src_in if seg.src_in > 0.02 else None,
+                duration=seg.duration,
+                label=f"flatten {i}",
+            )
+            parts.append(part)
+
+        interim = tmp_path / "joined.mkv"
+        _concat_copy(ff, parts, interim)
+        _finalize(interim, output, edits)

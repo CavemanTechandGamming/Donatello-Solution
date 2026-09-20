@@ -9,6 +9,7 @@ from pathlib import Path
 from src.core.export_metadata import TrackEditState
 from src.core.logging_setup import get_logger
 from src.core.markers import TimelineMarker, markers_from_list, markers_to_list
+from src.core.sequence import EditDecision, sequences_from_dict, sequences_to_dict
 
 logger = get_logger("workspace")
 
@@ -37,6 +38,8 @@ class WorkspaceState:
     markers: dict[str, list[TimelineMarker]] = field(default_factory=dict)
     # media path key → audio stream_index → preview volume 0..2 (100% = 1.0)
     audio_volumes: dict[str, dict[int, float]] = field(default_factory=dict)
+    # media path key → edit decision list (ordered source spans for that clip's sequence)
+    sequences: dict[str, EditDecision] = field(default_factory=dict)
 
 
 def _path_key(path: Path) -> str:
@@ -112,6 +115,7 @@ def state_to_dict(state: WorkspaceState) -> dict:
         "track_edits": track_edits,
         "markers": markers,
         "audio_volumes": audio_volumes,
+        "sequences": sequences_to_dict(state.sequences),
     }
 
 
@@ -211,6 +215,16 @@ def state_from_dict(data: object) -> WorkspaceState:
             if str(media_key) != key:
                 volumes_out[str(media_key)] = parsed
 
+    sequences_out: dict[str, EditDecision] = {}
+    for media_key, edl in sequences_from_dict(data.get("sequences")).items():
+        try:
+            key = _path_key(Path(str(media_key)))
+        except OSError:
+            key = str(media_key)
+        sequences_out[key] = edl
+        if str(media_key) != key:
+            sequences_out[str(media_key)] = edl
+
     return WorkspaceState(
         media=media,
         active=active,
@@ -222,6 +236,7 @@ def state_from_dict(data: object) -> WorkspaceState:
         track_edits=edits_out,
         markers=markers_out,
         audio_volumes=volumes_out,
+        sequences=sequences_out,
     )
 
 

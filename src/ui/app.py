@@ -12,7 +12,7 @@ from tkinterdnd2 import DND_FILES, TkinterDnD
 
 from src import __version__
 from src.core import settings as app_settings
-from src.core.cut import CutError, CutRange, perform_cut
+from src.core.cut import CutError, CutRange, flatten_edit_decision, perform_cut
 from src.core.insert import perform_insert
 from src.core.export_metadata import (
     ExportError,
@@ -24,6 +24,7 @@ from src.core.logging_setup import get_logger, log_path
 from src.core.markers import TimelineMarker
 from src.core.preview import PreviewFrame, PreviewPlayer
 from src.core.probe import MediaTrack, ProbeError, ProbeResult, format_duration, probe_mkv
+from src.core.sequence import EditDecision
 from src.core.workspace import (
     WorkspaceError,
     WorkspaceState,
@@ -123,6 +124,7 @@ class DonatelloApp(ctk.CTk, TkinterDnD.DnDWrapper):
         self._edits: dict[str, dict[int, TrackEditState]] = {}
         self._markers: dict[str, list[TimelineMarker]] = {}
         self._audio_volumes: dict[str, dict[int, float]] = {}
+        self._sequences: dict[str, EditDecision] = {}
         self._mark_in: float | None = None
         self._mark_out: float | None = None
         self._selected_stream_index: int | None = None
@@ -362,6 +364,7 @@ class DonatelloApp(ctk.CTk, TkinterDnD.DnDWrapper):
             on_seek=self._seek_preview,
             on_select=self._select_stream,
             on_edit=self._edit_track,
+            on_segment_reorder=self._on_segment_reorder,
         )
         self._lanes.grid(row=1, column=0, sticky="nsew", padx=16, pady=(0, 6))
 
@@ -370,13 +373,23 @@ class DonatelloApp(ctk.CTk, TkinterDnD.DnDWrapper):
 
         btn_in = ctk.CTkButton(cut_row, text="Mark In", width=78, command=self._mark_in_here)
         btn_in.pack(side="left", padx=(0, 4))
-        tip(btn_in, "Mark In", "Set the start of the range at the playhead.")
+        tip(
+            btn_in,
+            "Mark In",
+            "Start of the export work area (and Delete range). "
+            "Frames before In are not exported.",
+        )
 
         btn_out = ctk.CTkButton(
             cut_row, text="Mark Out", width=86, command=self._mark_out_here
         )
         btn_out.pack(side="left", padx=4)
-        tip(btn_out, "Mark Out", "Set the end of the range at the playhead.")
+        tip(
+            btn_out,
+            "Mark Out",
+            "End of the export work area (and Delete range). "
+            "Frames after Out are not exported.",
+        )
 
         btn_clear = ctk.CTkButton(
             cut_row, text="Clear", width=64, command=self._clear_marks
@@ -396,20 +409,40 @@ class DonatelloApp(ctk.CTk, TkinterDnD.DnDWrapper):
         btn_markers.pack(side="left", padx=4)
         tip(btn_markers, "Markers", "List, rename, delete, or jump to markers.")
 
-        btn_cut = ctk.CTkButton(
-            cut_row, text="Cut", width=64, command=lambda: self._do_cut(False)
+        btn_razor = ctk.CTkButton(
+            cut_row, text="Razor", width=70, command=self._do_razor
         )
-        btn_cut.pack(side="left", padx=(12, 4))
-        tip(btn_cut, "Cut", "Remove the In→Out range from all streams.")
+        btn_razor.pack(side="left", padx=(12, 4))
+        tip(
+            btn_razor,
+            "Razor",
+            "Split the timeline at the playhead. Nothing is deleted — "
+            "drag segments to rearrange.",
+        )
 
-        btn_cut_sel = ctk.CTkButton(
-            cut_row,
-            text="Cut selected",
-            width=110,
-            command=lambda: self._do_cut(True),
+        btn_del = ctk.CTkButton(
+            cut_row, text="Delete", width=70, command=lambda: self._do_delete(False)
         )
-        btn_cut_sel.pack(side="left", padx=4)
-        tip(btn_cut_sel, "Cut selected", "Remove In→Out on the selected video/audio only.")
+        btn_del.pack(side="left", padx=4)
+        tip(
+            btn_del,
+            "Delete",
+            "Remove the In→Out range from the timeline (closes the gap). "
+            "Confirms first. In/Out still define the Export work area.",
+        )
+
+        btn_del_sel = ctk.CTkButton(
+            cut_row,
+            text="Delete selected",
+            width=120,
+            command=lambda: self._do_delete(True),
+        )
+        btn_del_sel.pack(side="left", padx=4)
+        tip(
+            btn_del_sel,
+            "Delete selected",
+            "Remove In→Out on the selected video/audio only (bakes a new file).",
+        )
 
         ins_row = ctk.CTkFrame(timeline, fg_color="transparent")
         ins_row.grid(row=3, column=0, sticky="ew", padx=16, pady=(0, 14))
@@ -597,10 +630,11 @@ class DonatelloApp(ctk.CTk, TkinterDnD.DnDWrapper):
             selected_stream_index=self._selected_stream_index,
             mark_in=self._mark_in,
             mark_out=self._mark_out,
-            playhead=self._player.position if self._active_path is not None else None,
+            playhead=self._playhead_timeline() if self._active_path is not None else None,
             track_edits={k: dict(v) for k, v in self._edits.items()},
             markers={k: list(v) for k, v in self._markers.items()},
             audio_volumes={k: dict(v) for k, v in self._audio_volumes.items()},
+            sequences={k: EditDecision(segments=list(v.segments)) for k, v in self._sequences.items()},
         )
 
     def _write_workspace(self, path: Path) -> None:
@@ -649,6 +683,7 @@ class DonatelloApp(ctk.CTk, TkinterDnD.DnDWrapper):
         self._edits.clear()
         self._markers.clear()
         self._audio_volumes.clear()
+        self._sequences.clear()
         self._show_empty_state()
         self._refresh_project_list()
         self._refresh_window_title()
@@ -696,6 +731,10 @@ class DonatelloApp(ctk.CTk, TkinterDnD.DnDWrapper):
         self._markers = {k: list(v) for k, v in state.markers.items()}
         self._audio_volumes = {
             k: dict(v) for k, v in state.audio_volumes.items()
+        }
+        self._sequences = {
+            k: EditDecision(segments=list(v.segments))
+            for k, v in state.sequences.items()
         }
 
         missing: list[str] = []
@@ -751,7 +790,7 @@ class DonatelloApp(ctk.CTk, TkinterDnD.DnDWrapper):
             self._update_marks_label()
             if state.playhead is not None:
                 try:
-                    self._player.show_frame_at(max(0.0, float(state.playhead)))
+                    self._seek_timeline(max(0.0, float(state.playhead)))
                 except Exception:
                     logger.exception("Could not restore playhead to %.3f", state.playhead)
 
@@ -833,7 +872,13 @@ class DonatelloApp(ctk.CTk, TkinterDnD.DnDWrapper):
 
         logger.info("Export requested: %s → %s", self._active_path.name, out)
         chapter_markers = list(self._markers.get(key) or [])
-        duration = current.duration_seconds or 0.0
+        edl = self._active_sequence()
+        needs_flatten = not self._edl_is_identity()
+        duration = (
+            edl.timeline_duration()
+            if needs_flatten and edl is not None
+            else (current.duration_seconds or 0.0)
+        )
 
         range_start: float | None = None
         range_end: float | None = None
@@ -853,12 +898,34 @@ class DonatelloApp(ctk.CTk, TkinterDnD.DnDWrapper):
                 )
                 return
 
+        flat_path: Path | None = None
+        export_source = Path(self._active_path)
         try:
+            if needs_flatten:
+                if edl is None or not edl.segments:
+                    dialogs.show_warning(
+                        "Export",
+                        "Timeline edit decision is empty — nothing to export.",
+                        parent=self,
+                    )
+                    return
+                flat_path = _work_dir() / (
+                    f"{self._active_path.stem}_flat_{int(duration * 1000)}.mkv"
+                )
+                logger.info("Flattening EDL (%d segments) → %s", len(edl.segments), flat_path)
+                flatten_edit_decision(edl, flat_path, edits=edits)
+                export_source = flat_path
+                # Probe flattened duration for metadata
+                try:
+                    flat_probe = probe_mkv(flat_path)
+                    duration = flat_probe.duration_seconds or duration
+                except ProbeError:
+                    pass
+
             if out.resolve() == Path(self._active_path).resolve():
-                # Overwrite via temp then replace
                 tmp = out.with_suffix(".donatello-export.tmp.mkv")
                 export_with_track_metadata(
-                    self._active_path,
+                    export_source,
                     tmp,
                     edits,
                     markers=chapter_markers,
@@ -869,7 +936,7 @@ class DonatelloApp(ctk.CTk, TkinterDnD.DnDWrapper):
                 tmp.replace(out)
             else:
                 export_with_track_metadata(
-                    self._active_path,
+                    export_source,
                     out,
                     edits,
                     markers=chapter_markers,
@@ -877,7 +944,7 @@ class DonatelloApp(ctk.CTk, TkinterDnD.DnDWrapper):
                     range_start=range_start,
                     range_end=range_end,
                 )
-        except ExportError as exc:
+        except (ExportError, CutError) as exc:
             _show_error("Export failed", str(exc), parent=self, exc=exc)
             return
         except OSError as exc:
@@ -885,6 +952,8 @@ class DonatelloApp(ctk.CTk, TkinterDnD.DnDWrapper):
             return
 
         notes: list[str] = []
+        if needs_flatten:
+            notes.append("Baked timeline edits into the export.")
         if range_start is not None and range_end is not None:
             notes.append(
                 f"Trimmed to In–Out: {format_duration(range_start)}–"
@@ -902,8 +971,10 @@ class DonatelloApp(ctk.CTk, TkinterDnD.DnDWrapper):
             "\n".join(notes) + f"\n\n{out}",
             parent=self,
         )
-        # Reload preview from exported/active path
-        self.load_mkv(Path(self._active_path))
+        # After a successful flatten export, adopt identity EDL on the active source
+        # only if we exported a bake of the current timeline — keep working on source.
+        # Reload preview from active path (EDL preserved until he opens the export).
+        self.load_mkv(Path(self._active_path), clear_marks=False)
 
     def import_paths(self, paths: list[Path], *, load_first_if_empty: bool) -> None:
         added: list[Path] = []
@@ -978,17 +1049,88 @@ class DonatelloApp(ctk.CTk, TkinterDnD.DnDWrapper):
         self._updating_scrub = False
 
     def _open_preview(self, result: ProbeResult) -> None:
-        duration = result.duration_seconds or 0.0
-        self._player.open(result.path, duration if duration > 0 else None)
-        self._scrub.configure(state="normal", to=max(duration, 0.1))
+        file_duration = result.duration_seconds or 0.0
+        self._player.open(result.path, file_duration if file_duration > 0 else None)
+        timeline_dur = self._timeline_duration()
+        scrub_to = max(timeline_dur if timeline_dur > 0 else file_duration, 0.1)
+        self._scrub.configure(state="normal", to=scrub_to)
         self._updating_scrub = True
         self._scrub.set(0)
         self._updating_scrub = False
         self._play_btn.configure(text="Play")
         self._time_label.configure(
-            text=f"0:00 / {format_duration(result.duration_seconds)}"
+            text=f"0:00 / {format_duration(timeline_dur if timeline_dur > 0 else file_duration)}"
         )
         self._refresh_skip_button_labels()
+
+    def _timeline_duration(self) -> float:
+        edl = self._active_sequence()
+        if edl is not None:
+            d = edl.timeline_duration()
+            if d > 0:
+                return d
+        if self._result is not None:
+            return float(self._result.duration_seconds or 0.0)
+        return 0.0
+
+    def _edl_is_identity(self) -> bool:
+        if self._active_path is None or self._result is None:
+            return True
+        edl = self._active_sequence()
+        if edl is None:
+            return True
+        return edl.is_identity(
+            self._active_path, float(self._result.duration_seconds or 0.0)
+        )
+
+    def _playhead_timeline(self) -> float:
+        if self._active_path is None:
+            return 0.0
+        src_t = float(self._player.position)
+        if self._edl_is_identity():
+            return src_t
+        edl = self._active_sequence()
+        if edl is None:
+            return src_t
+        resolved = edl.resolve_playback(self._active_path, src_t)
+        if resolved is None:
+            return edl.timeline_duration()
+        return resolved[1]
+
+    def _seek_timeline(self, timeline_t: float) -> None:
+        if self._active_path is None:
+            return
+        edl = self._active_sequence()
+        if edl is None or self._edl_is_identity():
+            self._player.show_frame_at(max(0.0, float(timeline_t)))
+            return
+        mapped = edl.map_timeline_to_source(float(timeline_t))
+        if mapped is None:
+            return
+        _source, src_t = mapped
+        self._player.show_frame_at(src_t)
+
+    def _sync_scrubber_duration(self) -> None:
+        dur = self._timeline_duration()
+        if dur <= 0:
+            return
+        self._scrub.configure(state="normal", to=max(dur, 0.1))
+        self._time_label.configure(
+            text=f"{format_duration(self._playhead_timeline())} / {format_duration(dur)}"
+        )
+
+    def _remap_markers_after_remove(self, key: str, start: float, end: float) -> None:
+        removed = max(0.0, float(end) - float(start))
+        marks = list(self._markers.get(key) or [])
+        kept: list[TimelineMarker] = []
+        for mark in marks:
+            if mark.time < start - 1e-6:
+                kept.append(mark)
+            elif mark.time >= end - 1e-6:
+                kept.append(
+                    TimelineMarker(time=max(0.0, mark.time - removed), name=mark.name)
+                )
+        self._markers[key] = kept
 
     def _toggle_play(self) -> None:
         if self._active_path is None:
@@ -1004,20 +1146,27 @@ class DonatelloApp(ctk.CTk, TkinterDnD.DnDWrapper):
         self._player.pause()
         self._play_btn.configure(text="Play")
         if self._active_path is not None:
-            self._player.show_frame_at(0.0)
+            self._seek_timeline(0.0)
 
     def _step_frames(self, direction: int) -> None:
         if self._active_path is None:
             return
         self._play_btn.configure(text="Play")
-        self._player.step_frames(direction)
+        if self._edl_is_identity():
+            self._player.step_frames(direction)
+            return
+        delta = direction * float(self._player.frame_duration)
+        self._seek_timeline(self._playhead_timeline() + delta)
 
     def _step_seconds(self, direction: int) -> None:
         if self._active_path is None:
             return
         skip = app_settings.get_preview_skip_seconds()
         self._play_btn.configure(text="Play")
-        self._player.step_seconds(direction * skip)
+        if self._edl_is_identity():
+            self._player.step_seconds(direction * skip)
+            return
+        self._seek_timeline(self._playhead_timeline() + direction * skip)
 
     def _goto_marker(self, direction: int) -> None:
         """Jump to previous (-1) or next (+1) named marker relative to playhead."""
@@ -1026,7 +1175,7 @@ class DonatelloApp(ctk.CTk, TkinterDnD.DnDWrapper):
         markers = sorted(self._active_marker_list(), key=lambda m: (m.time, m.name.lower()))
         if not markers:
             return
-        t = float(self._player.position)
+        t = float(self._playhead_timeline())
         eps = 0.05
         if direction < 0:
             candidates = [m for m in markers if m.time < t - eps]
@@ -1039,7 +1188,7 @@ class DonatelloApp(ctk.CTk, TkinterDnD.DnDWrapper):
                 return
             target = candidates[0]
         self._play_btn.configure(text="Play")
-        self._seek_preview(float(target.time))
+        self._seek_timeline(float(target.time))
 
     def _on_scrub(self, value: str | float) -> None:
         if self._updating_scrub or self._active_path is None:
@@ -1057,7 +1206,7 @@ class DonatelloApp(ctk.CTk, TkinterDnD.DnDWrapper):
         if self._player.playing:
             self._player.pause()
             self._play_btn.configure(text="Play")
-        self._player.show_frame_at(seconds)
+        self._seek_timeline(seconds)
 
     def _preview_box_size(self) -> tuple[int, int]:
         self._preview_label.update_idletasks()
@@ -1108,16 +1257,38 @@ class DonatelloApp(ctk.CTk, TkinterDnD.DnDWrapper):
         self._show_pil_preview(frame.image)
 
     def _on_preview_position(self, seconds: float) -> None:
-        duration = self._player.duration
+        tl_dur = self._timeline_duration()
+        display_t = float(seconds)
+        if (
+            self._active_path is not None
+            and not self._edl_is_identity()
+        ):
+            edl = self._active_sequence()
+            if edl is not None:
+                resolved = edl.resolve_playback(self._active_path, float(seconds))
+                if resolved is None:
+                    self._player.pause()
+                    self._play_btn.configure(text="Play")
+                    display_t = tl_dur
+                else:
+                    src_t, display_t = resolved
+                    if abs(src_t - float(seconds)) > 0.05:
+                        was_playing = self._player.playing
+                        self._player.show_frame_at(src_t)
+                        if was_playing:
+                            self._player.play()
+                            self._play_btn.configure(text="Pause")
+                        return
+
         self._time_label.configure(
-            text=f"{format_duration(seconds)} / {format_duration(duration)}"
+            text=f"{format_duration(display_t)} / {format_duration(tl_dur or self._player.duration)}"
         )
-        if duration and duration > 0:
+        if tl_dur and tl_dur > 0:
             self._updating_scrub = True
-            self._scrub.set(min(seconds, duration))
+            self._scrub.set(min(display_t, tl_dur))
             self._updating_scrub = False
         if hasattr(self, "_lanes"):
-            self._lanes.set_position(seconds)
+            self._lanes.set_position(display_t)
 
     def _on_preview_ended(self) -> None:
         self._play_btn.configure(text="Play")
@@ -1179,6 +1350,7 @@ class DonatelloApp(ctk.CTk, TkinterDnD.DnDWrapper):
             self._selected_stream_index = None
         self._ensure_edits(result)
         self._seed_markers_from_probe(result)
+        self._ensure_sequence(result)
         self._apply_result(result)
         self._refresh_project_list()
         self._open_preview(result)
@@ -1205,6 +1377,37 @@ class DonatelloApp(ctk.CTk, TkinterDnD.DnDWrapper):
             len(self._markers[key]),
             result.path.name,
         )
+
+    def _ensure_sequence(self, result: ProbeResult) -> EditDecision:
+        """Default EDL = one segment covering the whole active file."""
+        key = _path_key(result.path)
+        existing = self._sequences.get(key)
+        if existing is not None and existing.segments:
+            return existing
+        # Try alternate keys from a saved workspace
+        for alt_key, edl in list(self._sequences.items()):
+            try:
+                if _path_key(Path(alt_key)) == key and edl.segments:
+                    self._sequences[key] = edl
+                    return edl
+            except OSError:
+                continue
+        edl = EditDecision.single_clip(
+            result.path, float(result.duration_seconds or 0.0)
+        )
+        self._sequences[key] = edl
+        return edl
+
+    def _active_sequence(self) -> EditDecision | None:
+        if self._active_path is None:
+            return None
+        key = _path_key(self._active_path)
+        edl = self._sequences.get(key)
+        if edl is not None and edl.segments:
+            return edl
+        if self._result is not None:
+            return self._ensure_sequence(self._result)
+        return None
 
     def _apply_result(self, result: ProbeResult) -> None:
         self._ensure_edits(result)
@@ -1298,6 +1501,11 @@ class DonatelloApp(ctk.CTk, TkinterDnD.DnDWrapper):
                     )
                 )
         duration = float(self._result.duration_seconds or 0.0)
+        edl = self._ensure_sequence(self._result)
+        edl_dur = edl.timeline_duration()
+        if edl_dur > 0:
+            duration = edl_dur
+        spans = [(a, b) for a, b, _seg in edl.timeline_spans()]
         self._lanes.set_tracks(
             lanes,
             duration=duration,
@@ -1306,7 +1514,39 @@ class DonatelloApp(ctk.CTk, TkinterDnD.DnDWrapper):
             mark_out=self._mark_out,
             markers=list(self._active_marker_list()) if self._active_path else [],
             position=float(self._player.position),
+            segment_spans=spans,
         )
+
+    def _on_segment_reorder(self, from_index: int, drop_timeline_t: float) -> None:
+        """Reorder an EDL segment after a lane drag-and-drop."""
+        if self._active_path is None or self._result is None:
+            return
+        edl = self._active_sequence()
+        if edl is None or len(edl.segments) < 2:
+            self._refresh_timeline_lanes()
+            return
+        to_index = edl.drop_index_at(drop_timeline_t, moving_index=from_index)
+        new_edl = edl.move_segment(from_index, to_index)
+        # No-op if order unchanged
+        same = len(new_edl.segments) == len(edl.segments) and all(
+            a.source == b.source
+            and abs(a.src_in - b.src_in) < 1e-6
+            and abs(a.src_out - b.src_out) < 1e-6
+            for a, b in zip(edl.segments, new_edl.segments)
+        )
+        if same:
+            self._refresh_timeline_lanes()
+            return
+        key = _path_key(self._active_path)
+        self._sequences[key] = new_edl
+        logger.info(
+            "EDL reorder: %s segment %d → %d (%d segments)",
+            self._active_path.name,
+            from_index,
+            to_index,
+            len(new_edl.segments),
+        )
+        self._refresh_timeline_lanes()
 
     def _select_stream(self, stream_index: int) -> None:
         self._selected_stream_index = stream_index
@@ -1318,13 +1558,13 @@ class DonatelloApp(ctk.CTk, TkinterDnD.DnDWrapper):
     def _mark_in_here(self) -> None:
         if self._active_path is None:
             return
-        self._mark_in = self._player.position
+        self._mark_in = self._playhead_timeline()
         self._update_marks_label()
 
     def _mark_out_here(self) -> None:
         if self._active_path is None:
             return
-        self._mark_out = self._player.position
+        self._mark_out = self._playhead_timeline()
         self._update_marks_label()
 
     def _clear_marks(self) -> None:
@@ -1346,7 +1586,7 @@ class DonatelloApp(ctk.CTk, TkinterDnD.DnDWrapper):
                 parent=self,
             )
             return
-        t = float(self._player.position)
+        t = float(self._playhead_timeline())
         default_name = f"Chapter {len(self._active_marker_list()) + 1}"
         name = dialogs.ask_string(
             "Add marker",
@@ -1375,7 +1615,7 @@ class DonatelloApp(ctk.CTk, TkinterDnD.DnDWrapper):
 
         def on_seek(seconds: float) -> None:
             try:
-                self._player.show_frame_at(max(0.0, float(seconds)))
+                self._seek_timeline(max(0.0, float(seconds)))
             except Exception:
                 logger.exception("Seek to marker failed")
 
@@ -1412,55 +1652,142 @@ class DonatelloApp(ctk.CTk, TkinterDnD.DnDWrapper):
             if self._active_path is not None:
                 self._lanes.set_markers(list(self._active_marker_list()))
 
-    def _do_cut(self, single_stream: bool) -> None:
+    def _do_razor(self) -> None:
+        """Split the EDL at the playhead — nothing deleted."""
         if self._active_path is None or self._result is None:
-            dialogs.show_warning("Cut", "Load a clip onto the timeline first.", parent=self)
+            dialogs.show_warning(
+                "Razor", "Load a clip onto the timeline first.", parent=self
+            )
+            return
+        key = _path_key(self._active_path)
+        edl = self._ensure_sequence(self._result)
+        at = self._playhead_timeline()
+        new_edl = edl.split_at(at)
+        if new_edl is None:
+            dialogs.show_info(
+                "Razor",
+                "Nothing to split here — playhead is at a segment edge "
+                "or the start/end of the timeline.",
+                parent=self,
+            )
+            return
+        self._sequences[key] = new_edl
+        logger.info(
+            "Razor at %.3f on %s → %d segment(s)",
+            at,
+            self._active_path.name,
+            len(new_edl.segments),
+        )
+        self._refresh_timeline_lanes()
+        self._seek_timeline(at)
+
+    def _do_delete(self, single_stream: bool) -> None:
+        if self._active_path is None or self._result is None:
+            dialogs.show_warning(
+                "Delete", "Load a clip onto the timeline first.", parent=self
+            )
             return
         if self._mark_in is None or self._mark_out is None:
             dialogs.show_warning(
-                "Cut",
-                "Set Mark In and Mark Out from the playhead first.",
+                "Delete",
+                "Set Mark In and Mark Out first.\n\n"
+                "Delete removes that span from the timeline.\n"
+                "(In/Out also define what Export keeps.)",
                 parent=self,
             )
             return
         try:
             cut = CutRange(start=self._mark_in, end=self._mark_out)
         except CutError as exc:
-            _show_error("Cut", str(exc), parent=self, exc=exc)
+            _show_error("Delete", str(exc), parent=self, exc=exc)
             return
 
-        selected: MediaTrack | None = None
-        if single_stream:
-            if self._selected_stream_index is None:
+        confirmed = dialogs.ask_yes_no(
+            "Delete In→Out?",
+            f"Remove {format_duration(cut.start)}–{format_duration(cut.end)} "
+            f"from the timeline and close the gap?\n\n"
+            "This does not change Mark In/Out’s meaning for Export — "
+            "it removes that span from the sequence.",
+            parent=self,
+        )
+        if not confirmed:
+            return
+
+        # All-streams Delete updates the EDL. Single-stream still bakes.
+        if not single_stream:
+            key = _path_key(self._active_path)
+            edl = self._ensure_sequence(self._result)
+            new_edl = edl.remove_range(cut.start, cut.end)
+            if not new_edl.segments:
                 dialogs.show_warning(
-                    "Cut selected",
-                    "Select a video or audio stream in the Streams list first.",
+                    "Delete",
+                    "That range would remove the entire timeline.",
                     parent=self,
                 )
                 return
-            selected = next(
-                (
-                    t
-                    for t in self._result.tracks
-                    if t.stream_index == self._selected_stream_index
-                ),
-                None,
+            self._sequences[key] = new_edl
+            self._remap_markers_after_remove(key, cut.start, cut.end)
+            land_at = min(cut.start, new_edl.timeline_duration())
+            self._clear_marks()
+            self._sync_scrubber_duration()
+            self._refresh_timeline_lanes()
+            self._seek_timeline(land_at)
+            logger.info(
+                "EDL delete all streams: %s %.3f–%.3f → %d segment(s), duration %.3f",
+                self._active_path.name,
+                cut.start,
+                cut.end,
+                len(new_edl.segments),
+                new_edl.timeline_duration(),
             )
-            if selected is None:
-                _show_error("Cut selected", "Selected stream not found.", parent=self)
-                return
+            dialogs.show_info(
+                "Delete complete",
+                f"Removed {format_duration(cut.start)}–{format_duration(cut.end)} "
+                f"(all streams).\n\n"
+                f"Timeline is now {format_duration(new_edl.timeline_duration())} "
+                f"in {len(new_edl.segments)} segment(s).\n"
+                "Export will bake the edit to a new MKV.",
+                parent=self,
+            )
+            return
+
+        if not self._edl_is_identity():
+            dialogs.show_warning(
+                "Delete selected",
+                "The timeline has pending Razor/Delete edits.\n\n"
+                "Export (to bake) before Delete selected.",
+                parent=self,
+            )
+            return
+
+        if self._selected_stream_index is None:
+            dialogs.show_warning(
+                "Delete selected",
+                "Select a video or audio stream first.",
+                parent=self,
+            )
+            return
+        selected = next(
+            (
+                t
+                for t in self._result.tracks
+                if t.stream_index == self._selected_stream_index
+            ),
+            None,
+        )
+        if selected is None:
+            _show_error("Delete selected", "Selected stream not found.", parent=self)
+            return
 
         stem = self._active_path.stem
-        out_path = _work_dir() / f"{stem}_cut_{int(cut.start * 1000)}_{int(cut.end * 1000)}.mkv"
+        out_path = _work_dir() / f"{stem}_del_{int(cut.start * 1000)}_{int(cut.end * 1000)}.mkv"
         key = _path_key(self._active_path)
         edits_map = self._edits.get(key) or edits_from_tracks(self._result.tracks)
         edits = list(edits_map.values())
         audio_tracks = [t for t in self._result.tracks if t.kind == "audio"]
 
-        mode = "selected track" if single_stream else "all streams"
         logger.info(
-            "Cut %s: %s %.3f–%.3f → %s",
-            mode,
+            "Delete selected track: %s %.3f–%.3f → %s",
             self._active_path.name,
             cut.start,
             cut.end,
@@ -1477,13 +1804,13 @@ class DonatelloApp(ctk.CTk, TkinterDnD.DnDWrapper):
                 audio_tracks=audio_tracks,
             )
         except CutError as exc:
-            _show_error("Cut failed", str(exc), parent=self, exc=exc)
+            _show_error("Delete failed", str(exc), parent=self, exc=exc)
             return
 
         dialogs.show_info(
-            "Cut complete",
-            f"Removed {format_duration(cut.start)}–{format_duration(cut.end)} ({mode}).\n\n"
-            f"Saved:\n{out_path}",
+            "Delete complete",
+            f"Removed {format_duration(cut.start)}–{format_duration(cut.end)} "
+            f"(selected track).\n\nSaved:\n{out_path}",
             parent=self,
         )
         self.import_paths([out_path], load_first_if_empty=False)
@@ -1492,7 +1819,7 @@ class DonatelloApp(ctk.CTk, TkinterDnD.DnDWrapper):
     def _insert_point(self) -> float:
         if self._mark_in is not None:
             return self._mark_in
-        return self._player.position
+        return self._playhead_timeline()
 
     def _pick_insert_source(self) -> Path | None:
         """Choose another project MKV, or browse."""
@@ -1563,6 +1890,15 @@ class DonatelloApp(ctk.CTk, TkinterDnD.DnDWrapper):
     def _do_insert(self, single_stream: bool) -> None:
         if self._active_path is None or self._result is None:
             dialogs.show_warning("Insert", "Load a base clip onto the timeline first.", parent=self)
+            return
+
+        if not self._edl_is_identity():
+            dialogs.show_warning(
+                "Insert",
+                "The timeline has pending Razor/Delete edits.\n\n"
+                "Export (to bake) before Insert.",
+                parent=self,
+            )
             return
 
         insert_path = self._pick_insert_source()
