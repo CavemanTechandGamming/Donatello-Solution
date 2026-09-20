@@ -21,6 +21,7 @@ Premiere-inspired timeline editor for **MKV only** — cut, assemble, and export
 - **Delete** — remove In→Out from the timeline after confirm (all streams by default; Delete selected for one video/audio)
 - **Insert** — splice another MKV into the timeline EDL at In or playhead (Export bakes); Insert selected still bakes one V/A stream
 - **Bin → timeline** — drag a Project clip onto the lanes (or OS-drop MKVs on the timeline) to insert
+- **Undo / Redo** — Edit menu or Ctrl+Z / Ctrl+Y after Razor, Delete, Insert, or segment reorder
 - **Track edit** — title and language on video / audio / subtitle; Default / Forced on subs; Edit lives on each timeline lane; written on Export
 - **Named markers** — become chapters in the exported MKV; opening an MKV that already has chapters loads them as markers
 - **Multi-lane timeline** — one row per video / audio / subtitle with playhead, In/Out, and markers; click a lane or marker to seek; Sel / Edit on the lane; audio volume (0%–200%) in Edit; **‹ M** / **M ›** jump between markers; drag segments to reorder after Razor/Delete
@@ -54,7 +55,7 @@ Until then, run from source (see [CONTRIBUTING.md](CONTRIBUTING.md)).
 
 1. **Import** MKVs into the Project panel (browse or drag-and-drop), then click a clip to load it on the timeline.
 2. **Preview** with Play / scrub; set **Mark In** and **Mark Out** when you need an export work area.
-3. **Razor** to split at the playhead (then drag segments), **Delete** to remove In→Out (confirm), or **Insert** / drag from Project onto the timeline. Edit track titles and languages as needed.
+3. **Razor** to split at the playhead (then drag segments), **Delete** to remove In→Out (confirm), or **Insert** / drag from Project onto the timeline. **Undo** / **Redo** (Ctrl+Z / Ctrl+Y) if you need to step back. Edit track titles and languages as needed.
 4. Drop **named markers** while watching — they become chapters on Export.
 5. **Save Workspace** to keep project state, or **Export** a single MKV (with marks set, Export keeps that span; Delete removes a span from the sequence).
 

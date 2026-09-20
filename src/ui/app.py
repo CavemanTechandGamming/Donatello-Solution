@@ -25,6 +25,12 @@ from src.core.markers import TimelineMarker
 from src.core.preview import PreviewFrame, PreviewPlayer
 from src.core.probe import MediaTrack, ProbeError, ProbeResult, format_duration, probe_mkv
 from src.core.sequence import EditDecision, TimelineSegment
+from src.core.undo import (
+    TimelineCheckpoint,
+    UndoStack,
+    copy_edl,
+    copy_markers,
+)
 from src.core.workspace import (
     WorkspaceError,
     WorkspaceState,
@@ -125,6 +131,7 @@ class DonatelloApp(ctk.CTk, TkinterDnD.DnDWrapper):
         self._markers: dict[str, list[TimelineMarker]] = {}
         self._audio_volumes: dict[str, dict[int, float]] = {}
         self._sequences: dict[str, EditDecision] = {}
+        self._undo_stack = UndoStack()
         self._preview_media_path: Path | None = None
         self._bin_drag_path: Path | None = None
         self._bin_drag_moved = False
@@ -177,6 +184,9 @@ class DonatelloApp(ctk.CTk, TkinterDnD.DnDWrapper):
         self._menubar.add_menu(
             "Edit",
             [
+                ("Undo", self._undo_edit),
+                ("Redo", self._redo_edit),
+                ("---", None),
                 ("Settings", self.open_settings),
                 ("---", None),
                 ("Clear marks", self._clear_marks),
@@ -200,6 +210,9 @@ class DonatelloApp(ctk.CTk, TkinterDnD.DnDWrapper):
         self.bind_all("<Control-s>", lambda _e: self.save_workspace())
         self.bind_all("<Control-e>", lambda _e: self.export_dialog())
         self.bind_all("<Control-comma>", lambda _e: self.open_settings())
+        self.bind_all("<Control-z>", lambda _e: self._undo_edit())
+        self.bind_all("<Control-y>", lambda _e: self._redo_edit())
+        self.bind_all("<Control-Shift-Z>", lambda _e: self._redo_edit())
 
     def _open_log_from_menu(self) -> None:
         from src.core.logging_setup import open_log_file
@@ -831,6 +844,7 @@ class DonatelloApp(ctk.CTk, TkinterDnD.DnDWrapper):
         self._markers.clear()
         self._audio_volumes.clear()
         self._sequences.clear()
+        self._undo_stack.clear()
         self._show_empty_state()
         self._refresh_project_list()
         self._refresh_window_title()
@@ -1539,6 +1553,7 @@ class DonatelloApp(ctk.CTk, TkinterDnD.DnDWrapper):
         self._ensure_edits(result)
         self._seed_markers_from_probe(result)
         self._ensure_sequence(result)
+        self._undo_stack.clear()
         self._apply_result(result)
         self._refresh_project_list()
         self._open_preview(result)
@@ -1596,6 +1611,63 @@ class DonatelloApp(ctk.CTk, TkinterDnD.DnDWrapper):
         if self._result is not None:
             return self._ensure_sequence(self._result)
         return None
+
+    def _capture_checkpoint(self) -> TimelineCheckpoint | None:
+        if self._active_path is None or self._result is None:
+            return None
+        key = _path_key(self._active_path)
+        edl = self._ensure_sequence(self._result)
+        return TimelineCheckpoint(
+            media_key=key,
+            segments=copy_edl(edl),
+            markers=copy_markers(list(self._markers.get(key) or [])),
+            mark_in=self._mark_in,
+            mark_out=self._mark_out,
+            playhead=float(self._playhead_timeline()),
+        )
+
+    def _push_undo(self) -> None:
+        cp = self._capture_checkpoint()
+        if cp is not None:
+            self._undo_stack.push(cp)
+
+    def _apply_checkpoint(self, cp: TimelineCheckpoint) -> None:
+        self._sequences[cp.media_key] = cp.edl()
+        self._markers[cp.media_key] = copy_markers(cp.markers)
+        self._mark_in = cp.mark_in
+        self._mark_out = cp.mark_out
+        self._update_marks_label()
+        self._sync_scrubber_duration()
+        self._refresh_timeline_lanes()
+        self._seek_timeline(cp.playhead)
+
+    def _undo_edit(self) -> None:
+        if self._active_path is None:
+            return
+        if not self._undo_stack.can_undo:
+            return
+        current = self._capture_checkpoint()
+        if current is None:
+            return
+        prev = self._undo_stack.undo(current)
+        if prev is None:
+            return
+        logger.info("Undo timeline edit")
+        self._apply_checkpoint(prev)
+
+    def _redo_edit(self) -> None:
+        if self._active_path is None:
+            return
+        if not self._undo_stack.can_redo:
+            return
+        current = self._capture_checkpoint()
+        if current is None:
+            return
+        nxt = self._undo_stack.redo(current)
+        if nxt is None:
+            return
+        logger.info("Redo timeline edit")
+        self._apply_checkpoint(nxt)
 
     def _apply_result(self, result: ProbeResult) -> None:
         self._ensure_edits(result)
@@ -1725,6 +1797,7 @@ class DonatelloApp(ctk.CTk, TkinterDnD.DnDWrapper):
         if same:
             self._refresh_timeline_lanes()
             return
+        self._push_undo()
         key = _path_key(self._active_path)
         self._sequences[key] = new_edl
         logger.info(
@@ -1859,6 +1932,7 @@ class DonatelloApp(ctk.CTk, TkinterDnD.DnDWrapper):
                 parent=self,
             )
             return
+        self._push_undo()
         self._sequences[key] = new_edl
         logger.info(
             "Razor at %.3f on %s → %d segment(s)",
@@ -1915,6 +1989,7 @@ class DonatelloApp(ctk.CTk, TkinterDnD.DnDWrapper):
                     parent=self,
                 )
                 return
+            self._push_undo()
             self._sequences[key] = new_edl
             self._remap_markers_after_remove(key, cut.start, cut.end)
             land_at = min(cut.start, new_edl.timeline_duration())
@@ -2229,6 +2304,7 @@ class DonatelloApp(ctk.CTk, TkinterDnD.DnDWrapper):
             source=ins_probe.path, src_in=0.0, src_out=dur
         )
         at = max(0.0, min(float(at), edl.timeline_duration()))
+        self._push_undo()
         new_edl = edl.insert_at(at, piece)
         self._sequences[key] = new_edl
         self._remap_markers_after_insert(key, at, dur)

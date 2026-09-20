@@ -29,6 +29,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Audio volume 0%–200% in the audio Edit dialog (slider + typed percent); preview monitor gain; soft-clips peaks; persisted in the workspace
 - Marker strip (gold ticks + names); click a marker on the strip or lane to seek; transport **‹ M** / **M ›** for previous / next marker
 - Import MKV chapters as timeline markers on load (when the clip has none in the workspace yet)
+- **Undo / Redo** — Edit menu + Ctrl+Z / Ctrl+Y (Ctrl+Shift+Z); covers Razor, Delete (all-streams), EDL Insert, segment reorder; stack clears on load clip / open workspace
 - Themed top menu bar (File / Edit / Help); themed About dialog; themed info / warning / error / string-prompt / yes-no dialogs
 - Dark hover tooltips on controls; quieter chrome; active clip / workspace name in window title
 
