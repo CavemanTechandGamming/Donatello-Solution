@@ -21,7 +21,13 @@ from src.core.export_metadata import (
     export_with_track_metadata,
 )
 from src.core.logging_setup import get_logger, log_path
-from src.core.markers import TimelineMarker
+from src.core.markers import (
+    MARKER_KIND_CHAPTER,
+    MARKER_KIND_SPLIT,
+    TimelineMarker,
+    build_export_multiple_segments,
+    chapter_markers,
+)
 from src.core.preview import PreviewFrame, PreviewPlayer
 from src.core.probe import MediaTrack, ProbeError, ProbeResult, format_duration, probe_mkv
 from src.core.sequence import EditDecision, TimelineSegment
@@ -177,6 +183,7 @@ class DonatelloApp(ctk.CTk, TkinterDnD.DnDWrapper):
                 ("Save Workspace", self.save_workspace),
                 ("Save Workspace As", self.save_workspace_as_dialog),
                 ("Export MKV", self.export_dialog),
+                ("Export multiple…", self.export_multiple_dialog),
                 ("---", None),
                 ("Exit", self.destroy),
             ],
@@ -191,6 +198,7 @@ class DonatelloApp(ctk.CTk, TkinterDnD.DnDWrapper):
                 ("---", None),
                 ("Clear marks", self._clear_marks),
                 ("Add marker", self._add_marker_here),
+                ("Add split", self._add_split_here),
                 ("Markers", self._manage_markers),
             ],
         )
@@ -420,6 +428,16 @@ class DonatelloApp(ctk.CTk, TkinterDnD.DnDWrapper):
         )
         btn_add_marker.pack(side="left", padx=(12, 4))
         tip(btn_add_marker, "Add marker", "Named chapter point at the playhead.")
+
+        btn_add_split = ctk.CTkButton(
+            cut_row, text="Add split", width=90, command=self._add_split_here
+        )
+        btn_add_split.pack(side="left", padx=4)
+        tip(
+            btn_add_split,
+            "Add split",
+            "Split point for Export multiple — name becomes the output filename.",
+        )
 
         btn_markers = ctk.CTkButton(
             cut_row, text="Markers", width=90, command=self._manage_markers
@@ -1032,7 +1050,7 @@ class DonatelloApp(ctk.CTk, TkinterDnD.DnDWrapper):
             edits.append(base)
 
         logger.info("Export requested: %s → %s", self._active_path.name, out)
-        chapter_markers = list(self._markers.get(key) or [])
+        chapter_markers_list = chapter_markers(list(self._markers.get(key) or []))
         edl = self._active_sequence()
         needs_flatten = not self._edl_is_identity()
         duration = (
@@ -1089,7 +1107,7 @@ class DonatelloApp(ctk.CTk, TkinterDnD.DnDWrapper):
                     export_source,
                     tmp,
                     edits,
-                    markers=chapter_markers,
+                    markers=chapter_markers_list,
                     duration=duration,
                     range_start=range_start,
                     range_end=range_end,
@@ -1100,7 +1118,7 @@ class DonatelloApp(ctk.CTk, TkinterDnD.DnDWrapper):
                     export_source,
                     out,
                     edits,
-                    markers=chapter_markers,
+                    markers=chapter_markers_list,
                     duration=duration,
                     range_start=range_start,
                     range_end=range_end,
@@ -1123,8 +1141,8 @@ class DonatelloApp(ctk.CTk, TkinterDnD.DnDWrapper):
             )
         else:
             notes.append("Full clip (no In/Out set).")
-        if chapter_markers:
-            notes.append(f"Chapters: {len(chapter_markers)} named marker(s).")
+        if chapter_markers_list:
+            notes.append(f"Chapters: {len(chapter_markers_list)} named marker(s).")
         else:
             notes.append("No named markers — no chapters written.")
         dialogs.show_info(
@@ -1135,6 +1153,221 @@ class DonatelloApp(ctk.CTk, TkinterDnD.DnDWrapper):
         # After a successful flatten export, adopt identity EDL on the active source
         # only if we exported a bake of the current timeline — keep working on source.
         # Reload preview from active path (EDL preserved until he opens the export).
+        self.load_mkv(Path(self._active_path), clear_marks=False)
+
+    def _track_edits_for_export(self, current: ProbeResult) -> list:
+        key = _path_key(self._active_path) if self._active_path else ""
+        saved = self._edits.get(key) or {}
+        edits: list = []
+        for track in current.tracks:
+            if track.kind not in ("video", "audio", "subtitle"):
+                continue
+            base = TrackEditState.from_track(track)
+            prior = saved.get(track.stream_index)
+            if prior is not None and prior.kind == track.kind:
+                base.title = prior.title
+                base.language = prior.language
+                if track.kind == "subtitle":
+                    base.is_default = prior.is_default
+                    base.is_forced = prior.is_forced
+            edits.append(base)
+        return edits
+
+    def export_multiple_dialog(self) -> None:
+        """Export several MKVs from split markers (In/Out as virtual bounds first)."""
+        if self._active_path is None or self._result is None:
+            dialogs.show_warning(
+                "Nothing to export",
+                "Load a clip onto the timeline first.",
+                parent=self,
+            )
+            return
+
+        self._player.pause()
+        self._play_btn.configure(text="Play")
+
+        key = _path_key(self._active_path)
+        all_markers = list(self._markers.get(key) or [])
+        edl = self._active_sequence()
+        needs_flatten = not self._edl_is_identity()
+        duration = (
+            edl.timeline_duration()
+            if needs_flatten and edl is not None
+            else float(self._result.duration_seconds or 0.0)
+        )
+        if duration <= 0:
+            dialogs.show_warning(
+                "Export multiple",
+                "Clip has no usable duration.",
+                parent=self,
+            )
+            return
+
+        segments = build_export_multiple_segments(
+            all_markers,
+            duration=duration,
+            mark_in=self._mark_in,
+            mark_out=self._mark_out,
+        )
+        if not segments:
+            has_bounds = self._mark_in is not None or self._mark_out is not None
+            if has_bounds:
+                dialogs.show_warning(
+                    "Export multiple",
+                    "No exportable ranges.\n\n"
+                    "With Mark In/Out set, set both so Out is after In, "
+                    "or add split markers inside that window.",
+                    parent=self,
+                )
+            else:
+                dialogs.show_warning(
+                    "Export multiple",
+                    "Add at least one split marker first "
+                    "(Add split — name becomes the output filename).\n\n"
+                    "Or set Mark In/Out to export that span as one file.",
+                    parent=self,
+                )
+            return
+
+        first_start = segments[0].start
+        if (
+            first_start > 0.001
+            and app_settings.get_warn_export_multiple_discard_before_first()
+        ):
+            ok = dialogs.ask_yes_no(
+                "Discard before first split?",
+                f"Everything before {format_duration(first_start)} will not be "
+                f"exported ({len(segments)} file(s) will be written).\n\n"
+                "Put a split (or Mark In) at 0:00 if you want that span kept "
+                "and named.\n\n"
+                "Continue?",
+                parent=self,
+                ok_text="Export",
+            )
+            if not ok:
+                return
+
+        folder_str = filedialog.askdirectory(
+            parent=self,
+            title="Export multiple — choose output folder",
+            initialdir=app_settings.export_dialog_initialdir(),
+        )
+        if not folder_str:
+            return
+        out_dir = Path(folder_str)
+        if not out_dir.is_dir():
+            dialogs.show_warning(
+                "Export multiple",
+                "Chosen path is not a folder.",
+                parent=self,
+            )
+            return
+
+        try:
+            current = probe_mkv(self._active_path)
+        except ProbeError as exc:
+            _show_error("Export multiple failed", str(exc), parent=self, exc=exc)
+            return
+
+        edits = self._track_edits_for_export(current)
+        flat_path: Path | None = None
+        export_source = Path(self._active_path)
+        written: list[Path] = []
+
+        try:
+            if needs_flatten:
+                if edl is None or not edl.segments:
+                    dialogs.show_warning(
+                        "Export multiple",
+                        "Timeline edit decision is empty — nothing to export.",
+                        parent=self,
+                    )
+                    return
+                flat_path = _work_dir() / (
+                    f"{self._active_path.stem}_flat_{int(duration * 1000)}.mkv"
+                )
+                logger.info(
+                    "Flattening EDL for Export multiple (%d segments) → %s",
+                    len(edl.segments),
+                    flat_path,
+                )
+                flatten_edit_decision(edl, flat_path, edits=edits)
+                export_source = flat_path
+                try:
+                    flat_probe = probe_mkv(flat_path)
+                    duration = flat_probe.duration_seconds or duration
+                except ProbeError:
+                    pass
+                # Rebuild segments against flattened duration
+                segments = build_export_multiple_segments(
+                    all_markers,
+                    duration=duration,
+                    mark_in=self._mark_in,
+                    mark_out=self._mark_out,
+                )
+                if not segments:
+                    dialogs.show_warning(
+                        "Export multiple",
+                        "No exportable ranges after flattening.",
+                        parent=self,
+                    )
+                    return
+
+            logger.info(
+                "Export multiple: %d file(s) from %s → %s",
+                len(segments),
+                self._active_path.name,
+                out_dir,
+            )
+            for seg in segments:
+                out = out_dir / f"{seg.stem}.mkv"
+                # Avoid clobbering if stem uniqueness failed vs existing files
+                if out.exists():
+                    n = 2
+                    while True:
+                        candidate = out_dir / f"{seg.stem}_{n}.mkv"
+                        if not candidate.exists():
+                            out = candidate
+                            break
+                        n += 1
+                export_with_track_metadata(
+                    export_source,
+                    out,
+                    edits,
+                    markers=all_markers,
+                    duration=duration,
+                    range_start=seg.start,
+                    range_end=seg.end,
+                )
+                written.append(out)
+        except (ExportError, CutError) as exc:
+            _show_error("Export multiple failed", str(exc), parent=self, exc=exc)
+            return
+        except OSError as exc:
+            _show_error("Export multiple failed", str(exc), parent=self, exc=exc)
+            return
+
+        lines = [
+            f"Wrote {len(written)} file(s).",
+        ]
+        if needs_flatten:
+            lines.append("Baked timeline edits into each export.")
+        if self._mark_in is not None or self._mark_out is not None:
+            lines.append(
+                "Mark In/Out used as outer bounds; split markers cut inside."
+            )
+        if first_start > 0.001:
+            lines.append(
+                f"Discarded media before {format_duration(first_start)}."
+            )
+        preview = "\n".join(p.name for p in written[:8])
+        if len(written) > 8:
+            preview += f"\n… and {len(written) - 8} more"
+        dialogs.show_info(
+            "Export multiple complete",
+            "\n".join(lines) + f"\n\n{out_dir}\n\n{preview}",
+            parent=self,
+        )
         self.load_mkv(Path(self._active_path), clear_marks=False)
 
     def import_paths(self, paths: list[Path], *, load_first_if_empty: bool) -> None:
@@ -1325,7 +1558,11 @@ class DonatelloApp(ctk.CTk, TkinterDnD.DnDWrapper):
                 kept.append(mark)
             elif mark.time >= end - 1e-6:
                 kept.append(
-                    TimelineMarker(time=max(0.0, mark.time - removed), name=mark.name)
+                    TimelineMarker(
+                        time=max(0.0, mark.time - removed),
+                        name=mark.name,
+                        kind=mark.kind,
+                    )
                 )
         self._markers[key] = kept
 
@@ -1573,7 +1810,8 @@ class DonatelloApp(ctk.CTk, TkinterDnD.DnDWrapper):
             self._markers.setdefault(key, [])
             return
         self._markers[key] = [
-            TimelineMarker(time=m.time, name=m.name) for m in result.chapters
+            TimelineMarker(time=m.time, name=m.name, kind=MARKER_KIND_CHAPTER)
+            for m in result.chapters
         ]
         logger.info(
             "Loaded %d chapter marker(s) from %s",
@@ -1848,10 +2086,13 @@ class DonatelloApp(ctk.CTk, TkinterDnD.DnDWrapper):
             )
             return
         t = float(self._playhead_timeline())
-        default_name = f"Chapter {len(self._active_marker_list()) + 1}"
+        n_chapters = sum(
+            1 for m in self._active_marker_list() if m.kind == MARKER_KIND_CHAPTER
+        )
+        default_name = f"Chapter {n_chapters + 1}"
         name = dialogs.ask_string(
             "Add marker",
-            f"Name for marker at {format_duration(t)}:",
+            f"Chapter name at {format_duration(t)}:",
             initialvalue=default_name,
             parent=self,
         )
@@ -1859,9 +2100,39 @@ class DonatelloApp(ctk.CTk, TkinterDnD.DnDWrapper):
             return
         name = name.strip() or default_name
         markers = self._active_marker_list()
-        markers.append(TimelineMarker(time=t, name=name))
-        markers.sort(key=lambda m: (m.time, m.name.lower()))
-        logger.info("Added marker %r @ %.3f on %s", name, t, self._active_path.name)
+        markers.append(
+            TimelineMarker(time=t, name=name, kind=MARKER_KIND_CHAPTER)
+        )
+        markers.sort(key=lambda m: (m.time, m.kind, m.name.lower()))
+        logger.info("Added chapter marker %r @ %.3f on %s", name, t, self._active_path.name)
+        self._update_marks_label()
+
+    def _add_split_here(self) -> None:
+        if self._active_path is None:
+            dialogs.show_warning(
+                "Add split",
+                "Load a clip onto the timeline first.",
+                parent=self,
+            )
+            return
+        t = float(self._playhead_timeline())
+        n_splits = sum(
+            1 for m in self._active_marker_list() if m.kind == MARKER_KIND_SPLIT
+        )
+        default_name = f"Part {n_splits + 1}"
+        name = dialogs.ask_string(
+            "Add split",
+            f"Output filename at {format_duration(t)} (no extension):",
+            initialvalue=default_name,
+            parent=self,
+        )
+        if name is None:
+            return
+        name = name.strip() or default_name
+        markers = self._active_marker_list()
+        markers.append(TimelineMarker(time=t, name=name, kind=MARKER_KIND_SPLIT))
+        markers.sort(key=lambda m: (m.time, m.kind, m.name.lower()))
+        logger.info("Added split marker %r @ %.3f on %s", name, t, self._active_path.name)
         self._update_marks_label()
 
     def _manage_markers(self) -> None:
@@ -2330,7 +2601,11 @@ class DonatelloApp(ctk.CTk, TkinterDnD.DnDWrapper):
         for mark in marks:
             if mark.time >= at - 1e-6:
                 shifted.append(
-                    TimelineMarker(time=mark.time + duration, name=mark.name)
+                    TimelineMarker(
+                        time=mark.time + duration,
+                        name=mark.name,
+                        kind=mark.kind,
+                    )
                 )
             else:
                 shifted.append(mark)

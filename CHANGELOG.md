@@ -30,6 +30,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Marker strip (gold ticks + names); click a marker on the strip or lane to seek; transport **‹ M** / **M ›** for previous / next marker
 - Import MKV chapters as timeline markers on load (when the clip has none in the workspace yet)
 - **Undo / Redo** — Edit menu + Ctrl+Z / Ctrl+Y (Ctrl+Shift+Z); covers Razor, Delete (all-streams), EDL Insert, segment reorder; stack clears on load clip / open workspace
+- **Split markers** + **Add split** (blue on the strip); chapter markers stay gold
+- **Export multiple…** — File menu; folder of MKVs from split markers; Mark In/Out as outer bounds first; discard-before-first warn (Settings → Folders, default on); chapters inside each range remapped to 0
 - Themed top menu bar (File / Edit / Help); themed About dialog; themed info / warning / error / string-prompt / yes-no dialogs
 - Dark hover tooltips on controls; quieter chrome; active clip / workspace name in window title
 

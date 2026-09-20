@@ -9,7 +9,12 @@ from pathlib import Path
 
 from src.core.ffmpeg_paths import FFmpegBootstrapError, ffmpeg_binary
 from src.core.logging_setup import get_logger
-from src.core.markers import TimelineMarker, build_chapters_ffmetadata
+from src.core.markers import (
+    MARKER_KIND_CHAPTER,
+    TimelineMarker,
+    build_chapters_ffmetadata,
+    chapter_markers,
+)
 from src.core.probe import MediaTrack
 
 logger = get_logger("export")
@@ -196,14 +201,20 @@ def markers_for_export_range(
     start: float,
     end: float,
 ) -> list[TimelineMarker]:
-    """Keep markers inside [start, end] and shift times so export starts at 0."""
+    """Keep chapter markers inside [start, end] and shift times so export starts at 0."""
     out: list[TimelineMarker] = []
-    for marker in markers:
+    for marker in chapter_markers(markers):
         if marker.time < start - 0.001:
             continue
         if marker.time > end + 0.001:
             continue
-        out.append(TimelineMarker(time=max(0.0, marker.time - start), name=marker.name))
+        out.append(
+            TimelineMarker(
+                time=max(0.0, marker.time - start),
+                name=marker.name,
+                kind=MARKER_KIND_CHAPTER,
+            )
+        )
     return out
 
 
@@ -279,7 +290,7 @@ def export_with_track_metadata(
         source,
         output,
         edits,
-        markers=list(markers or []),
+        markers=chapter_markers(list(markers or [])),
         duration=src_duration if src_duration > 0 else None,
     )
 

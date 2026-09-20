@@ -84,6 +84,15 @@ class SettingsDialog(ctk.CTkToplevel):
             on_clear=self._clear_export,
         )
 
+        self._warn_multi_var = ctk.BooleanVar(
+            value=app_settings.get_warn_export_multiple_discard_before_first()
+        )
+        ctk.CTkCheckBox(
+            tab,
+            text="Warn before Export multiple discards media before the first split",
+            variable=self._warn_multi_var,
+        ).grid(row=3, column=0, columnspan=3, sticky="w", padx=8, pady=(12, 8))
+
     def _build_preview_tab(self, tab) -> None:
         tab.grid_columnconfigure(1, weight=1)
 
@@ -230,12 +239,16 @@ class SettingsDialog(ctk.CTkToplevel):
         app_settings.set_preview_audio_device(
             None if chosen == app_settings.DEFAULT_AUDIO_LABEL else chosen
         )
+        app_settings.set_warn_export_multiple_discard_before_first(
+            bool(self._warn_multi_var.get())
+        )
         logger.info(
-            "Settings saved: device=%s rate=%s downmix=%s skip=%s",
+            "Settings saved: device=%s rate=%s downmix=%s skip=%s warn_multi=%s",
             chosen or app_settings.DEFAULT_AUDIO_LABEL,
             self._rate_var.get(),
             self._downmix_var.get(),
             raw,
+            self._warn_multi_var.get(),
         )
         self.grab_release()
         self.destroy()

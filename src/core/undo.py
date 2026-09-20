@@ -71,4 +71,6 @@ def copy_edl(edl: EditDecision) -> list[TimelineSegment]:
 
 
 def copy_markers(markers: list[TimelineMarker]) -> list[TimelineMarker]:
-    return [TimelineMarker(time=m.time, name=m.name) for m in markers]
+    return [
+        TimelineMarker(time=m.time, name=m.name, kind=m.kind) for m in markers
+    ]

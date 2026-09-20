@@ -120,6 +120,26 @@ def export_dialog_initialdir() -> str | None:
     return str(path) if path else None
 
 
+def get_warn_export_multiple_discard_before_first() -> bool:
+    """Warn when Export multiple will drop media before the first split/boundary."""
+    raw = load_settings().get("warn_export_multiple_discard_before_first", True)
+    if isinstance(raw, bool):
+        return raw
+    if isinstance(raw, (int, float)):
+        return bool(raw)
+    text = str(raw or "").strip().lower()
+    if text in ("0", "false", "no", "off"):
+        return False
+    return True
+
+
+def set_warn_export_multiple_discard_before_first(enabled: bool) -> bool:
+    settings = load_settings()
+    settings["warn_export_multiple_discard_before_first"] = bool(enabled)
+    save_settings(settings)
+    return bool(enabled)
+
+
 def import_dialog_initialdir() -> str | None:
     path = get_last_import_dir() or get_default_workspace_dir()
     return str(path) if path else None

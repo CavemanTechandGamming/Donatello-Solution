@@ -8,7 +8,7 @@ from dataclasses import dataclass
 
 import customtkinter as ctk
 
-from src.core.markers import TimelineMarker
+from src.core.markers import MARKER_KIND_SPLIT, TimelineMarker
 from src.core.probe import MediaTrack, format_duration
 from src.ui.tooltip import tip
 
@@ -28,7 +28,9 @@ _LANE_HEIGHT = 26
 _HEADER_WIDTH = 56
 _MARKER_STRIP_HEIGHT = 22
 _MARKER_HIT_PX = 10
-_MARKER_COLOR = "#e6c35c"
+_MARKER_COLOR_CHAPTER = "#e6c35c"
+_MARKER_COLOR_SPLIT = "#5cb8e6"
+_MARKER_COLOR = _MARKER_COLOR_CHAPTER
 
 
 @dataclass(frozen=True)
@@ -335,7 +337,12 @@ class TimelineLanes(ctk.CTkFrame):
 
         for mark in self._markers:
             x = self._marker_x(mark.time, width, pad=pad)
-            canvas.create_line(x, 8, x, height - 1, fill=_MARKER_COLOR, width=2)
+            color = (
+                _MARKER_COLOR_SPLIT
+                if getattr(mark, "kind", None) == MARKER_KIND_SPLIT
+                else _MARKER_COLOR_CHAPTER
+            )
+            canvas.create_line(x, 8, x, height - 1, fill=color, width=2)
             canvas.create_polygon(
                 x - 6,
                 2,
@@ -343,17 +350,18 @@ class TimelineLanes(ctk.CTkFrame):
                 2,
                 x,
                 12,
-                fill=_MARKER_COLOR,
+                fill=color,
                 outline="#1a1a1a",
             )
             name = (mark.name or "").strip()
             if name:
                 label = name if len(name) <= 14 else name[:13] + "…"
+                label_color = "#c0e6f0" if color == _MARKER_COLOR_SPLIT else "#f0e6c0"
                 canvas.create_text(
                     min(width - 4, max(4, x + 8)),
                     height // 2,
                     text=label,
-                    fill="#f0e6c0",
+                    fill=label_color,
                     font=("Segoe UI", 8),
                     anchor="w",
                 )
@@ -589,7 +597,12 @@ class TimelineLanes(ctk.CTkFrame):
         if self._duration > 0:
             for mark in self._markers:
                 x = self._marker_x(mark.time, width, pad=pad)
-                canvas.create_line(x, pad, x, height - pad, fill=_MARKER_COLOR, width=2)
+                color = (
+                    _MARKER_COLOR_SPLIT
+                    if getattr(mark, "kind", None) == MARKER_KIND_SPLIT
+                    else _MARKER_COLOR_CHAPTER
+                )
+                canvas.create_line(x, pad, x, height - pad, fill=color, width=2)
                 canvas.create_polygon(
                     x - 5,
                     pad,
@@ -597,7 +610,7 @@ class TimelineLanes(ctk.CTkFrame):
                     pad,
                     x,
                     pad + 8,
-                    fill=_MARKER_COLOR,
+                    fill=color,
                     outline="",
                 )
 

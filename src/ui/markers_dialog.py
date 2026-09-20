@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import customtkinter as ctk
 
-from src.core.markers import TimelineMarker
+from src.core.markers import MARKER_KIND_SPLIT, TimelineMarker
 from src.core.probe import format_duration
 from src.ui import dialogs
 
@@ -20,8 +20,8 @@ class MarkersDialog(ctk.CTkToplevel):
     ) -> None:
         super().__init__(master)
         self.title("Markers")
-        self.geometry("420x360")
-        self.minsize(360, 280)
+        self.geometry("460x380")
+        self.minsize(380, 300)
         self.transient(master)
         self.grab_set()
         self.focus_set()
@@ -32,7 +32,7 @@ class MarkersDialog(ctk.CTkToplevel):
 
         ctk.CTkLabel(
             self,
-            text="Markers → chapters on Export.",
+            text="Chapter markers → chapters on Export. Split markers → Export multiple files.",
             anchor="w",
             text_color=("gray40", "gray65"),
         ).pack(fill="x", padx=14, pady=(12, 6))
@@ -53,12 +53,14 @@ class MarkersDialog(ctk.CTkToplevel):
     def _rebuild(self) -> None:
         for child in self._list.winfo_children():
             child.destroy()
-        ordered = sorted(self._markers, key=lambda m: (m.time, m.name.lower()))
+        ordered = sorted(
+            self._markers, key=lambda m: (m.time, m.kind, m.name.lower())
+        )
         self._markers = ordered
         if not ordered:
             ctk.CTkLabel(
                 self._list,
-                text="No markers yet. Add one at the playhead.",
+                text="No markers yet. Add marker or Add split at the playhead.",
                 anchor="w",
                 text_color=("gray40", "gray60"),
             ).pack(fill="x", padx=6, pady=8)
@@ -66,9 +68,10 @@ class MarkersDialog(ctk.CTkToplevel):
         for idx, marker in enumerate(ordered):
             row = ctk.CTkFrame(self._list, fg_color=("gray85", "gray22"))
             row.pack(fill="x", padx=2, pady=3)
+            kind_label = "Split" if marker.kind == MARKER_KIND_SPLIT else "Chapter"
             ctk.CTkLabel(
                 row,
-                text=f"{format_duration(marker.time)}  —  {marker.name}",
+                text=f"{format_duration(marker.time)}  [{kind_label}]  —  {marker.name}",
                 anchor="w",
             ).pack(side="left", padx=8, pady=6, fill="x", expand=True)
             ctk.CTkButton(
@@ -89,9 +92,14 @@ class MarkersDialog(ctk.CTkToplevel):
         if not (0 <= index < len(self._markers)):
             return
         current = self._markers[index]
+        prompt = (
+            "Output filename (no extension):"
+            if current.kind == MARKER_KIND_SPLIT
+            else "Chapter name:"
+        )
         name = dialogs.ask_string(
             "Rename marker",
-            "Chapter name:",
+            prompt,
             initialvalue=current.name,
             parent=self,
         )
@@ -101,7 +109,9 @@ class MarkersDialog(ctk.CTkToplevel):
         if not name:
             dialogs.show_warning("Rename marker", "Name cannot be empty.", parent=self)
             return
-        self._markers[index] = TimelineMarker(time=current.time, name=name)
+        self._markers[index] = TimelineMarker(
+            time=current.time, name=name, kind=current.kind
+        )
         self._notify()
         self._rebuild()
 

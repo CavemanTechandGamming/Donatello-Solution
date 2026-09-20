@@ -23,11 +23,13 @@ Premiere-inspired timeline editor for **MKV only** — cut, assemble, and export
 - **Bin → timeline** — drag a Project clip onto the lanes (or OS-drop MKVs on the timeline) to insert
 - **Undo / Redo** — Edit menu or Ctrl+Z / Ctrl+Y after Razor, Delete, Insert, or segment reorder
 - **Track edit** — title and language on video / audio / subtitle; Default / Forced on subs; Edit lives on each timeline lane; written on Export
-- **Named markers** — become chapters in the exported MKV; opening an MKV that already has chapters loads them as markers
+- **Named markers** — **chapter** markers (gold) become chapters on single Export; opening an MKV that already has chapters loads them as chapter markers
+- **Split markers** — **Add split** (blue); title = output filename for Export multiple
 - **Multi-lane timeline** — one row per video / audio / subtitle with playhead, In/Out, and markers; click a lane or marker to seek; Sel / Edit on the lane; audio volume (0%–200%) in Edit; **‹ M** / **M ›** jump between markers; drag segments to reorder after Razor/Delete
 - **Workspace save / open** — `.donatello` restores the bin, active clip, marks, playhead, selection, track edits, markers, audio volumes, and timeline sequence
 - **Export (single MKV)** — remux with track metadata and chapters; prefers stream copy when possible; bakes pending timeline edits
-- **Settings** — default workspace and export folders; open the diagnostic log
+- **Export multiple…** — write several MKVs from split markers (In/Out as outer bounds when set); optional warn before discarding media before the first split
+- **Settings** — default workspace and export folders; Export-multiple discard warn; open the diagnostic log
 - Dark CustomTkinter chrome with a themed menu bar and themed dialogs
 - Softsubs stay lined up through cuts and inserts
 - Audio channel layouts preserved on Export: **stereo · 2.1 · 5.1 · 7.1**
@@ -56,10 +58,10 @@ Until then, run from source (see [CONTRIBUTING.md](CONTRIBUTING.md)).
 1. **Import** MKVs into the Project panel (browse or drag-and-drop), then click a clip to load it on the timeline.
 2. **Preview** with Play / scrub; set **Mark In** and **Mark Out** when you need an export work area.
 3. **Razor** to split at the playhead (then drag segments), **Delete** to remove In→Out (confirm), or **Insert** / drag from Project onto the timeline. **Undo** / **Redo** (Ctrl+Z / Ctrl+Y) if you need to step back. Edit track titles and languages as needed.
-4. Drop **named markers** while watching — they become chapters on Export.
-5. **Save Workspace** to keep project state, or **Export** a single MKV (with marks set, Export keeps that span; Delete removes a span from the sequence).
+4. Drop **chapter markers** while watching (chapters on single Export), or **Add split** where each output file should start (name = filename).
+5. **Save Workspace** to keep project state, **Export** one MKV, or **Export multiple…** for a folder of split outputs (with marks set, Export keeps In→Out; Export multiple uses In/Out as outer bounds then splits).
 
-**Save** = workspace only. **Export** = produce an MKV.
+**Save** = workspace only. **Export** = one MKV. **Export multiple** = several MKVs from splits.
 
 ---
 
@@ -67,7 +69,7 @@ Until then, run from source (see [CONTRIBUTING.md](CONTRIBUTING.md)).
 
 - Use **Keep channels** in Settings → Audio when you want the preview monitor to leave 5.1 / 7.1 alone (falls back to stereo if the device can’t open that many channels).
 - Open the log from Settings → Help if something fails — details live under `%APPDATA%\DonatelloSolution\donatello.log` on Windows.
-- Multi-file Export from split markers is still ahead.
+- Turn off the Export-multiple discard warning in Settings → Folders when cleaning a series the same way every time.
 
 ---
 
