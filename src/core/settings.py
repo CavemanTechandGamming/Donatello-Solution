@@ -423,4 +423,16 @@ def preview_monitor_layout(
             }.get(int(source_channels), "stereo")
             return guessed, int(source_channels)
         return "stereo", 2
+
+
+def get_ffmpeg_check_ok() -> bool:
+    """True after a successful FFmpeg check (used to stay quiet on later launches)."""
+    return bool(load_settings().get("ffmpeg_check_ok", False))
+
+
+def set_ffmpeg_check_ok(ok: bool) -> bool:
+    settings = load_settings()
+    settings["ffmpeg_check_ok"] = bool(ok)
+    save_settings(settings)
+    return bool(ok)
     return "stereo", 2

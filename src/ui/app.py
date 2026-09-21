@@ -194,6 +194,7 @@ class DonatelloApp(ctk.CTk, TkinterDnD.DnDWrapper):
         self._remember_clean_workspace()
         self._reschedule_autosave()
         self.after(250, self._maybe_offer_autosave_restore)
+        self.after(400, self._maybe_check_ffmpeg_on_startup)
         self._poll_preview()
 
     # ── menu ────────────────────────────────────────────────────────────
@@ -343,6 +344,7 @@ class DonatelloApp(ctk.CTk, TkinterDnD.DnDWrapper):
         self._menubar.add_menu(
             "Help",
             [
+                ("Check FFmpeg…", self._check_ffmpeg_from_menu),
                 ("Open log file", self._open_log_from_menu),
                 ("---", None),
                 ("About Donatello", self._show_about),
@@ -480,6 +482,32 @@ class DonatelloApp(ctk.CTk, TkinterDnD.DnDWrapper):
             open_log_file()
         except Exception as exc:
             _show_error("Log file", str(exc), parent=self, exc=exc)
+
+    def _check_ffmpeg_from_menu(self) -> None:
+        from src.core.ffmpeg_paths import check_ffmpeg
+
+        result = check_ffmpeg()
+        app_settings.set_ffmpeg_check_ok(result.ok)
+        if result.ok:
+            dialogs.show_info("FFmpeg", result.user_message(), parent=self)
+        else:
+            dialogs.show_error("FFmpeg not found", result.user_message(), parent=self)
+
+    def _maybe_check_ffmpeg_on_startup(self) -> None:
+        """Quiet when FFmpeg works; warn once with fix steps when it does not."""
+        from src.core.ffmpeg_paths import check_ffmpeg
+
+        result = check_ffmpeg()
+        if result.ok:
+            app_settings.set_ffmpeg_check_ok(True)
+            logger.info(
+                "FFmpeg OK on startup: %s",
+                result.version_line or result.ffmpeg_path,
+            )
+            return
+        app_settings.set_ffmpeg_check_ok(False)
+        logger.error("FFmpeg missing on startup: %s", result.error)
+        dialogs.show_error("FFmpeg not found", result.user_message(), parent=self)
 
     def _show_about(self) -> None:
         open_about(self)

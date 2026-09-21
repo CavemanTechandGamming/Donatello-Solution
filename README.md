@@ -32,11 +32,11 @@ Premiere-inspired timeline editor for **MKV only** — cut, assemble, and export
 - **Export (single MKV)** — remux with track metadata and chapters; prefers stream copy when possible; bakes pending timeline edits; progress dialog with Cancel
 - **Export multiple…** — write several MKVs from split markers (In/Out as outer bounds when set); optional warn before discarding media before the first split; progress + Cancel
 - **Tools** — Marks / edit / transport / chapter droppers; hide timeline button rows; shortcuts customizable in Settings → Keyboard
-- **Settings** — folders, preview, **Keyboard** (change / clear / reset shortcuts), audio, autosave, Export-multiple discard warn, log
+- **Settings** — folders, preview, **Keyboard** (change / clear / reset shortcuts), audio, autosave, Export-multiple discard warn, log, **FFmpeg check** (Help tab)
 - Dark CustomTkinter chrome with a native system menu bar and themed dialogs
 - Softsubs stay lined up through cuts and inserts; **MKV attachments** (fonts, etc.) travel with them on bake/export
 - Audio channel layouts preserved on Export: **stereo · 2.1 · 5.1 · 7.1**
-- FFmpeg via `static-ffmpeg` for normal use — no separate install required when developing
+- FFmpeg via `static-ffmpeg` for normal use — no separate install required when developing; Help → Check FFmpeg… confirms binaries
 
 ---
 
@@ -73,6 +73,7 @@ Until then, run from source (see [CONTRIBUTING.md](CONTRIBUTING.md)).
 - Use **Keep channels** in Settings → Audio when you want the preview monitor to leave 5.1 / 7.1 alone (falls back to stereo if the device can’t open that many channels).
 - Open the log from Settings → Help if something fails — details live under `%APPDATA%\DonatelloSolution\donatello.log` on Windows.
 - Turn off the Export-multiple discard warning in Settings → Folders when cleaning a series the same way every time.
+- If open/export fails oddly, use **Help → Check FFmpeg…** (or Settings → Help) to confirm FFmpeg is found before digging the log.
 
 ---
 

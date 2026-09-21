@@ -365,6 +365,77 @@ class SettingsDialog(ctk.CTkToplevel):
             tab, text="Open log file", width=140, command=self._open_log
         ).grid(row=2, column=0, sticky="w", padx=8, pady=4)
 
+        ctk.CTkLabel(
+            tab,
+            text="FFmpeg",
+            anchor="w",
+            font=ctk.CTkFont(size=13, weight="bold"),
+        ).grid(row=3, column=0, sticky="ew", padx=8, pady=(18, 4))
+
+        self._ffmpeg_status = ctk.CTkLabel(
+            tab,
+            text="Not checked yet — click Check FFmpeg.",
+            anchor="w",
+            text_color=("gray40", "gray65"),
+            wraplength=560,
+            justify="left",
+        )
+        self._ffmpeg_status.grid(row=4, column=0, sticky="ew", padx=8, pady=(0, 8))
+
+        ctk.CTkButton(
+            tab, text="Check FFmpeg", width=140, command=self._check_ffmpeg
+        ).grid(row=5, column=0, sticky="w", padx=8, pady=4)
+
+        ctk.CTkLabel(
+            tab,
+            text="Donatello uses FFmpeg to open, cut, and export MKVs. "
+            "A bundled copy downloads on first use when needed.",
+            anchor="w",
+            text_color=("gray40", "gray60"),
+            wraplength=560,
+            font=ctk.CTkFont(size=11),
+        ).grid(row=6, column=0, sticky="ew", padx=8, pady=(4, 8))
+
+        # Refresh status once when the dialog opens (non-blocking-ish).
+        self.after(50, self._refresh_ffmpeg_status_quiet)
+
+    def _refresh_ffmpeg_status_quiet(self) -> None:
+        """Update the Help status line without a popup (fast path if already OK)."""
+        from src.core.ffmpeg_paths import check_ffmpeg
+
+        result = check_ffmpeg()
+        app_settings.set_ffmpeg_check_ok(result.ok)
+        if result.ok:
+            line = result.version_line or "FFmpeg found"
+            path = result.ffmpeg_path or ""
+            text = f"OK — {line}"
+            if path:
+                text = f"{text}\n{path}"
+            self._ffmpeg_status.configure(text=text)
+        else:
+            self._ffmpeg_status.configure(
+                text="Not found — click Check FFmpeg for steps to fix it."
+            )
+
+    def _check_ffmpeg(self) -> None:
+        from src.core.ffmpeg_paths import check_ffmpeg
+
+        result = check_ffmpeg()
+        app_settings.set_ffmpeg_check_ok(result.ok)
+        if result.ok:
+            line = result.version_line or "FFmpeg found"
+            path = result.ffmpeg_path or ""
+            text = f"OK — {line}"
+            if path:
+                text = f"{text}\n{path}"
+            self._ffmpeg_status.configure(text=text)
+            dialogs.show_info("FFmpeg", result.user_message(), parent=self)
+        else:
+            self._ffmpeg_status.configure(
+                text="Not found — see the dialog for what to try."
+            )
+            dialogs.show_error("FFmpeg not found", result.user_message(), parent=self)
+
     def _open_log(self) -> None:
         try:
             path = open_log_file()
