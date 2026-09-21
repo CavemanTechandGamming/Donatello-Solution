@@ -36,8 +36,10 @@ from src.core.sequence import EditDecision, TimelineSegment
 from src.core.undo import (
     TimelineCheckpoint,
     UndoStack,
+    copy_audio_volumes,
     copy_edl,
     copy_markers,
+    copy_track_edits,
 )
 from src.core.autosave import (
     autosave_exists,
@@ -2373,6 +2375,7 @@ class DonatelloApp(ctk.CTk, TkinterDnD.DnDWrapper):
         *,
         clear_marks: bool = True,
         restore_stream: int | None = None,
+        clear_undo: bool = True,
     ) -> None:
         try:
             result = probe_mkv(path)
@@ -2409,7 +2412,8 @@ class DonatelloApp(ctk.CTk, TkinterDnD.DnDWrapper):
         self._ensure_edits(result)
         self._seed_markers_from_probe(result)
         self._ensure_sequence(result)
-        self._undo_stack.clear()
+        if clear_undo:
+            self._undo_stack.clear()
         self._apply_result(result)
         self._refresh_project_list()
         self._open_preview(result)
@@ -2474,6 +2478,7 @@ class DonatelloApp(ctk.CTk, TkinterDnD.DnDWrapper):
             return None
         key = _path_key(self._active_path)
         edl = self._ensure_sequence(self._result)
+        edits = self._ensure_edits(self._result)
         return TimelineCheckpoint(
             media_key=key,
             segments=copy_edl(edl),
@@ -2481,6 +2486,8 @@ class DonatelloApp(ctk.CTk, TkinterDnD.DnDWrapper):
             mark_in=self._mark_in,
             mark_out=self._mark_out,
             playhead=float(self._playhead_timeline()),
+            track_edits=copy_track_edits(edits),
+            audio_volumes=copy_audio_volumes(self._audio_volumes.get(key) or {}),
         )
 
     def _push_undo(self) -> None:
@@ -2489,14 +2496,40 @@ class DonatelloApp(ctk.CTk, TkinterDnD.DnDWrapper):
             self._undo_stack.push(cp)
 
     def _apply_checkpoint(self, cp: TimelineCheckpoint) -> None:
+        """Restore a checkpoint; reloads the clip if undo steps across a bake."""
+        want = Path(cp.media_key)
+        need_reload = False
+        if self._active_path is None:
+            need_reload = True
+        else:
+            try:
+                need_reload = _path_key(self._active_path) != cp.media_key
+            except OSError:
+                need_reload = str(self._active_path) != cp.media_key
+
+        if need_reload:
+            if not want.is_file():
+                dialogs.show_warning(
+                    "Undo",
+                    "Cannot restore the previous clip — the file is missing:\n"
+                    f"{want}",
+                    parent=self,
+                )
+                return
+            self.load_mkv(want, clear_marks=False, clear_undo=False)
+
         self._sequences[cp.media_key] = cp.edl()
         self._markers[cp.media_key] = copy_markers(cp.markers)
+        self._edits[cp.media_key] = copy_track_edits(cp.track_edits)
+        self._audio_volumes[cp.media_key] = copy_audio_volumes(cp.audio_volumes)
         self._mark_in = cp.mark_in
         self._mark_out = cp.mark_out
         self._update_marks_label()
         self._sync_scrubber_duration()
         self._refresh_timeline_lanes()
+        self._sync_preview_monitor()
         self._seek_timeline(cp.playhead)
+        self._refresh_window_title()
 
     def _undo_edit(self) -> None:
         if self._active_path is None:
@@ -2915,6 +2948,7 @@ class DonatelloApp(ctk.CTk, TkinterDnD.DnDWrapper):
         self._place_chapter_marker(t, name)
 
     def _place_chapter_marker(self, time: float, name: str) -> None:
+        self._push_undo()
         markers = self._active_marker_list()
         markers.append(
             TimelineMarker(time=float(time), name=name, kind=MARKER_KIND_CHAPTER)
@@ -2950,6 +2984,7 @@ class DonatelloApp(ctk.CTk, TkinterDnD.DnDWrapper):
         if name is None:
             return
         name = name.strip() or default_name
+        self._push_undo()
         markers = self._active_marker_list()
         markers.append(TimelineMarker(time=t, name=name, kind=MARKER_KIND_SPLIT))
         markers.sort(key=lambda m: (m.time, m.kind, m.name.lower()))
@@ -2965,6 +3000,8 @@ class DonatelloApp(ctk.CTk, TkinterDnD.DnDWrapper):
             )
             return
         key = _path_key(self._active_path)
+        # One undo step for the whole dialog session (rename/delete/reorder).
+        self._push_undo()
 
         def on_seek(seconds: float) -> None:
             try:
@@ -3356,6 +3393,7 @@ class DonatelloApp(ctk.CTk, TkinterDnD.DnDWrapper):
             at,
             out_path.name,
         )
+        pre_bake = self._capture_checkpoint()
         try:
             outcome = run_with_progress(
                 self,
@@ -3393,6 +3431,9 @@ class DonatelloApp(ctk.CTk, TkinterDnD.DnDWrapper):
         )
         self.import_paths([out_path], load_first_if_empty=False)
         self.load_mkv(out_path)
+        # One Ctrl+Z restores the pre-bake clip (stack was cleared by load).
+        if pre_bake is not None:
+            self._undo_stack.push(pre_bake)
 
     def _insert_clip_into_edl(
         self, insert_path: Path, at: float, *, quiet: bool = False
@@ -3494,6 +3535,7 @@ class DonatelloApp(ctk.CTk, TkinterDnD.DnDWrapper):
         if result is None:
             return
 
+        self._push_undo()
         edit.title = result.title
         edit.language = result.language
         if edit.kind == "subtitle":
