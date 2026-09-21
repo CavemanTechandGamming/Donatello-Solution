@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import os
 from dataclasses import dataclass
 from pathlib import Path
@@ -42,6 +43,7 @@ from src.core.workspace import (
     WorkspaceState,
     load_workspace,
     save_workspace,
+    state_to_dict,
 )
 from src.ui.about_dialog import open_about
 from src.ui import dialogs
@@ -146,6 +148,7 @@ class DonatelloApp(ctk.CTk, TkinterDnD.DnDWrapper):
         self._mark_out: float | None = None
         self._selected_stream_index: int | None = None
         self._workspace_path: Path | None = None
+        self._saved_fingerprint: str = ""
 
         self._preview_image: ctk.CTkImage | None = None
         self._last_pil: Image.Image | None = None
@@ -164,6 +167,7 @@ class DonatelloApp(ctk.CTk, TkinterDnD.DnDWrapper):
         self._build_layout()
         self._wire_drag_and_drop()
         self._show_empty_state()
+        self._remember_clean_workspace()
         self._poll_preview()
 
     # ── menu ────────────────────────────────────────────────────────────
@@ -185,7 +189,7 @@ class DonatelloApp(ctk.CTk, TkinterDnD.DnDWrapper):
                 ("Export MKV", self.export_dialog),
                 ("Export multiple…", self.export_multiple_dialog),
                 ("---", None),
-                ("Exit", self.destroy),
+                ("Exit", self._on_close),
             ],
         )
         self._menubar.add_menu(
@@ -815,21 +819,75 @@ class DonatelloApp(ctk.CTk, TkinterDnD.DnDWrapper):
             sequences={k: EditDecision(segments=list(v.segments)) for k, v in self._sequences.items()},
         )
 
-    def _write_workspace(self, path: Path) -> None:
+    def _workspace_fingerprint(self) -> str:
+        """Stable snapshot of savable state (playhead ignored — scrub is not dirty)."""
+        data = state_to_dict(self._capture_workspace_state())
+        data["playhead"] = None
+        return json.dumps(data, sort_keys=True, default=str)
+
+    def _remember_clean_workspace(self) -> None:
+        self._saved_fingerprint = self._workspace_fingerprint()
+        self._refresh_window_title()
+
+    def _is_workspace_dirty(self) -> bool:
+        return self._workspace_fingerprint() != self._saved_fingerprint
+
+    def _confirm_leave_if_dirty(self) -> bool:
+        """
+        If dirty, prompt Save / Don't save / Cancel.
+        Returns True when it is OK to leave the current workspace state.
+        """
+        if not self._is_workspace_dirty():
+            return True
+        choice = dialogs.ask_save_discard_cancel(
+            "Unsaved workspace",
+            "You have unsaved workspace changes.\n\n"
+            "Save before continuing?",
+            parent=self,
+        )
+        if choice == "cancel":
+            return False
+        if choice == "discard":
+            return True
+        # save
+        if self._workspace_path is None:
+            path_str = filedialog.asksaveasfilename(
+                parent=self,
+                title="Save Workspace As",
+                initialdir=app_settings.workspace_dialog_initialdir(),
+                defaultextension=".donatello",
+                filetypes=[
+                    ("Donatello workspace", "*.donatello"),
+                    ("JSON", "*.json"),
+                    ("All files", "*.*"),
+                ],
+            )
+            if not path_str:
+                return False
+            return self._write_workspace(Path(path_str), quiet=True)
+        return self._write_workspace(self._workspace_path, quiet=True)
+
+    def _write_workspace(self, path: Path, *, quiet: bool = False) -> bool:
         try:
             written = save_workspace(path, self._capture_workspace_state())
         except WorkspaceError as exc:
             _show_error("Save failed", str(exc), parent=self, exc=exc)
-            return
+            return False
         self._workspace_path = written
-        self._refresh_window_title()
-        dialogs.show_info(
-            "Workspace saved",
-            f"Saved workspace to:\n{written}",
-            parent=self,
-        )
+        self._remember_clean_workspace()
+        if not quiet:
+            dialogs.show_info(
+                "Workspace saved",
+                f"Saved workspace to:\n{written}",
+                parent=self,
+            )
+        else:
+            logger.info("Workspace saved (quiet): %s", written)
+        return True
 
     def open_workspace_dialog(self) -> None:
+        if not self._confirm_leave_if_dirty():
+            return
         path_str = filedialog.askopenfilename(
             parent=self,
             title="Open Workspace",
@@ -847,7 +905,12 @@ class DonatelloApp(ctk.CTk, TkinterDnD.DnDWrapper):
     def _refresh_window_title(self) -> None:
         parts = [f"Donatello Solution {__version__}"]
         if self._workspace_path is not None:
-            parts.append(self._workspace_path.name)
+            name = self._workspace_path.name
+            if self._is_workspace_dirty():
+                name = f"• {name}"
+            parts.append(name)
+        elif self._is_workspace_dirty():
+            parts.append("• unsaved")
         if self._active_path is not None:
             parts.append(self._active_path.name)
         self.title(" — ".join(parts))
@@ -998,6 +1061,7 @@ class DonatelloApp(ctk.CTk, TkinterDnD.DnDWrapper):
                 f"Restored {len(self._items)} media item(s) from:\n{path}",
                 parent=self,
             )
+        self._remember_clean_workspace()
 
     def export_dialog(self) -> None:
         if self._active_path is None or self._result is None:
@@ -1420,6 +1484,8 @@ class DonatelloApp(ctk.CTk, TkinterDnD.DnDWrapper):
 
         if load_first_if_empty and self._active_path is None:
             self.load_mkv(added[0])
+        else:
+            self._refresh_window_title()
 
     # ── timeline / streams ──────────────────────────────────────────────
 
@@ -1740,6 +1806,8 @@ class DonatelloApp(ctk.CTk, TkinterDnD.DnDWrapper):
         self.after(33, self._poll_preview)
 
     def _on_close(self) -> None:
+        if not self._confirm_leave_if_dirty():
+            return
         self._player.close()
         self.destroy()
 
@@ -1949,6 +2017,7 @@ class DonatelloApp(ctk.CTk, TkinterDnD.DnDWrapper):
         )
         if monitor is not None and monitor.stream_index == stream_index:
             self._player.set_volume(value)
+        self._refresh_window_title()
 
     def _sync_preview_monitor_audio(self) -> None:
         if self._result is None:
@@ -2014,6 +2083,7 @@ class DonatelloApp(ctk.CTk, TkinterDnD.DnDWrapper):
             position=float(self._player.position),
             segment_spans=spans,
         )
+        self._refresh_window_title()
 
     def _on_segment_reorder(self, from_index: int, drop_timeline_t: float) -> None:
         """Reorder an EDL segment after a lane drag-and-drop."""
@@ -2183,6 +2253,7 @@ class DonatelloApp(ctk.CTk, TkinterDnD.DnDWrapper):
             self._lanes.set_marks(self._mark_in, self._mark_out)
             if self._active_path is not None:
                 self._lanes.set_markers(list(self._active_marker_list()))
+        self._refresh_window_title()
 
     def _do_razor(self) -> None:
         """Split the EDL at the playhead — nothing deleted."""

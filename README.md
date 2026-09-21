@@ -26,7 +26,7 @@ Premiere-inspired timeline editor for **MKV only** — cut, assemble, and export
 - **Named markers** — **chapter** markers (gold) become chapters on single Export; opening an MKV that already has chapters loads them as chapter markers
 - **Split markers** — **Add split** (blue); title = output filename for Export multiple
 - **Multi-lane timeline** — one row per video / audio / subtitle with playhead, In/Out, and markers; click a lane or marker to seek; Sel / Edit on the lane; audio volume (0%–200%) in Edit; **‹ M** / **M ›** jump between markers; drag segments to reorder after Razor/Delete
-- **Workspace save / open** — `.donatello` restores the bin, active clip, marks, playhead, selection, track edits, markers, audio volumes, and timeline sequence
+- **Workspace save / open** — `.donatello` restores the bin, active clip, marks, playhead, selection, track edits, markers, audio volumes, and timeline sequence; warns on close / Open Workspace if unsaved (`•` in the title when dirty)
 - **Export (single MKV)** — remux with track metadata and chapters; prefers stream copy when possible; bakes pending timeline edits
 - **Export multiple…** — write several MKVs from split markers (In/Out as outer bounds when set); optional warn before discarding media before the first split
 - **Settings** — default workspace and export folders; Export-multiple discard warn; open the diagnostic log
@@ -59,7 +59,7 @@ Until then, run from source (see [CONTRIBUTING.md](CONTRIBUTING.md)).
 2. **Preview** with Play / scrub; set **Mark In** and **Mark Out** when you need an export work area.
 3. **Razor** to split at the playhead (then drag segments), **Delete** to remove In→Out (confirm), or **Insert** / drag from Project onto the timeline. **Undo** / **Redo** (Ctrl+Z / Ctrl+Y) if you need to step back. Edit track titles and languages as needed.
 4. Drop **chapter markers** while watching (chapters on single Export), or **Add split** where each output file should start (name = filename).
-5. **Save Workspace** to keep project state, **Export** one MKV, or **Export multiple…** for a folder of split outputs (with marks set, Export keeps In→Out; Export multiple uses In/Out as outer bounds then splits).
+5. **Save Workspace** to keep project state, **Export** one MKV, or **Export multiple…** for a folder of split outputs (with marks set, Export keeps In→Out; Export multiple uses In/Out as outer bounds then splits). Closing with unsaved changes prompts Save / Don't save / Cancel.
 
 **Save** = workspace only. **Export** = one MKV. **Export multiple** = several MKVs from splits.
 

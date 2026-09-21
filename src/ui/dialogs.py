@@ -280,3 +280,92 @@ def ask_yes_no(
     )
     dlg.wait_window()
     return bool(dlg.result)
+
+
+class _AskSaveDiscardCancelDialog(ctk.CTkToplevel):
+    """Three-way: Save / Don't save / Cancel. result is one of those strings or None."""
+
+    def __init__(self, master, title: str, message: str) -> None:
+        super().__init__(master)
+        self.title(title)
+        self.minsize(400, 160)
+        self.resizable(True, False)
+        self.result: str | None = None
+        if master is not None:
+            self.transient(master)
+        self.grab_set()
+        self.focus_set()
+
+        self.grid_columnconfigure(0, weight=1)
+        self.grid_rowconfigure(0, weight=1)
+
+        body = ctk.CTkFrame(self, fg_color="transparent")
+        body.grid(row=0, column=0, sticky="nsew", padx=18, pady=(16, 8))
+        body.grid_columnconfigure(0, weight=1)
+
+        ctk.CTkLabel(
+            body,
+            text=title,
+            font=ctk.CTkFont(size=14, weight="bold"),
+            anchor="w",
+        ).grid(row=0, column=0, sticky="ew", pady=(0, 8))
+        ctk.CTkLabel(
+            body,
+            text=message,
+            anchor="w",
+            justify="left",
+            wraplength=440,
+            text_color=("gray30", "gray70"),
+        ).grid(row=1, column=0, sticky="ew")
+
+        btns = ctk.CTkFrame(self, fg_color="transparent")
+        btns.grid(row=1, column=0, sticky="e", padx=18, pady=(4, 16))
+        ctk.CTkButton(
+            btns,
+            text="Cancel",
+            width=100,
+            fg_color=("gray70", "gray35"),
+            hover_color=("gray60", "gray45"),
+            command=lambda: self._finish("cancel"),
+        ).pack(side="left", padx=(0, 8))
+        ctk.CTkButton(
+            btns,
+            text="Don't save",
+            width=110,
+            fg_color=("gray70", "gray35"),
+            hover_color=("gray60", "gray45"),
+            command=lambda: self._finish("discard"),
+        ).pack(side="left", padx=(0, 8))
+        ctk.CTkButton(
+            btns,
+            text="Save",
+            width=100,
+            command=lambda: self._finish("save"),
+        ).pack(side="left")
+
+        self.bind("<Escape>", lambda _e: self._finish("cancel"))
+        self.protocol("WM_DELETE_WINDOW", lambda: self._finish("cancel"))
+        self.update_idletasks()
+        w = max(420, min(540, self.winfo_reqwidth() + 24))
+        h = max(170, self.winfo_reqheight() + 8)
+        self.geometry(f"{w}x{h}")
+
+    def _finish(self, choice: str) -> None:
+        self.result = choice
+        try:
+            self.grab_release()
+        except Exception:
+            pass
+        self.destroy()
+
+
+def ask_save_discard_cancel(
+    title: str,
+    message: str,
+    *,
+    parent=None,
+) -> str:
+    """Return ``\"save\"``, ``\"discard\"``, or ``\"cancel\"``."""
+    dlg = _AskSaveDiscardCancelDialog(parent, title, message)
+    dlg.wait_window()
+    return dlg.result or "cancel"
