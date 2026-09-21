@@ -33,7 +33,7 @@ Premiere-inspired timeline editor for **MKV only** — cut, assemble, and export
 - **Tools** — Marks / edit / transport / chapter droppers; hide timeline button rows; shortcuts customizable in Settings → Keyboard
 - **Settings** — folders, preview, **Keyboard** (change / clear / reset shortcuts), audio, autosave, Export-multiple discard warn, log
 - Dark CustomTkinter chrome with a native system menu bar and themed dialogs
-- Softsubs stay lined up through cuts and inserts
+- Softsubs stay lined up through cuts and inserts; **MKV attachments** (fonts, etc.) travel with them on bake/export
 - Audio channel layouts preserved on Export: **stereo · 2.1 · 5.1 · 7.1**
 - FFmpeg via `static-ffmpeg` for normal use — no separate install required when developing
 

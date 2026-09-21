@@ -13,7 +13,6 @@ from typing import Any
 from src.core.ffmpeg_paths import FFmpegBootstrapError, ensure_ffmpeg_on_path, ffprobe_binary
 from src.core.logging_setup import get_logger
 from src.core.markers import TimelineMarker
-from src.core.markers import TimelineMarker
 
 logger = get_logger("probe")
 
@@ -116,6 +115,7 @@ class ProbeResult:
     tracks: list[MediaTrack]
     format_name: str
     chapters: list[TimelineMarker] = field(default_factory=list)
+    attachment_count: int = 0
 
 
 def format_duration(seconds: float | None) -> str:
@@ -300,6 +300,8 @@ def _tracks_from_info(info: dict[str, Any]) -> list[MediaTrack]:
 
     for stream in info.get("streams") or []:
         codec_type = (stream.get("codec_type") or "").lower()
+        if codec_type == "attachment":
+            continue  # counted on ProbeResult.attachment_count
         if _is_subtitle_stream(stream):
             kind = "subtitle"
         elif codec_type in ("video", "audio"):
@@ -433,10 +435,21 @@ def probe_mkv(path: Path | str) -> ProbeResult:
 
     format_name = str((info.get("format") or {}).get("format_name") or "matroska")
     chapters = _chapters_from_info(info)
+    attachment_count = sum(
+        1
+        for s in streams
+        if (s.get("codec_type") or "").lower() == "attachment"
+    )
     if chapters:
         logger.info(
             "Probed %d chapter(s) in %s",
             len(chapters),
+            path.name,
+        )
+    if attachment_count:
+        logger.info(
+            "Probed %d attachment(s) in %s",
+            attachment_count,
             path.name,
         )
     return ProbeResult(
@@ -445,4 +458,5 @@ def probe_mkv(path: Path | str) -> ProbeResult:
         tracks=_tracks_from_info(info),
         format_name=format_name,
         chapters=chapters,
+        attachment_count=attachment_count,
     )

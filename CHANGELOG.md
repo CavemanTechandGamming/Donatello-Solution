@@ -40,6 +40,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Preview arrow keys — ← / → ±1 frame; ↑ / ↓ ±skip seconds (Settings); ignored while typing
 - Native system menu bar (File / Edit / Tools / Help); themed About dialog; themed info / warning / error / string-prompt / yes-no dialogs
 - Dark hover tooltips on controls; quieter chrome; active clip / workspace name in window title
+- Softsub **attachments** (fonts, etc.) — probe counts them; cut / flatten / insert bake re-merge attachments from source MKV(s) after concat; simple Export remux keeps them via `-map 0`
 
 ### Changed
 

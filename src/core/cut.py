@@ -13,6 +13,12 @@ import tempfile
 from dataclasses import dataclass
 from pathlib import Path
 
+from src.core.attachments import (
+    AttachmentError,
+    media_map_args,
+    merge_attachments_onto,
+    sources_with_attachments,
+)
 from src.core.export_metadata import ExportError, TrackEditState, export_with_track_metadata
 from src.core.ffmpeg_paths import FFmpegBootstrapError, ffmpeg_binary
 from src.core.ffmpeg_run import FFmpegRunError, run_ffmpeg
@@ -70,13 +76,35 @@ def _finalize(
     edits: list[TrackEditState] | None,
     *,
     progress: JobProgress | None = None,
+    attachment_sources: list[Path] | None = None,
 ) -> None:
-    if edits:
-        export_with_track_metadata(interim, output, edits, progress=progress)
-    else:
-        if progress is not None:
-            progress.check()
-        output.write_bytes(interim.read_bytes())
+    work = interim
+    att_tmp: Path | None = None
+    sources = sources_with_attachments(attachment_sources or [])
+    if sources:
+        att_tmp = interim.with_name(interim.stem + "_with_att.mkv")
+        try:
+            merge_attachments_onto(
+                interim, att_tmp, sources, progress=progress
+            )
+        except AttachmentError as exc:
+            raise CutError(str(exc)) from exc
+        work = att_tmp
+
+    try:
+        if edits:
+            export_with_track_metadata(work, output, edits, progress=progress)
+        else:
+            if progress is not None:
+                progress.check()
+            output.write_bytes(work.read_bytes())
+    finally:
+        if att_tmp is not None:
+            try:
+                if att_tmp.is_file() and att_tmp != output:
+                    att_tmp.unlink()
+            except OSError:
+                pass
 
 
 def _extract_segment(
@@ -89,13 +117,13 @@ def _extract_segment(
     label: str = "segment",
     progress: JobProgress | None = None,
 ) -> None:
-    """Stream-copy a segment. ``start`` uses -ss after -i; ``duration`` uses -t."""
+    """Stream-copy a segment (V/A/S only — attachments restored at finalize)."""
     cmd = [ff, "-hide_banner", "-y", "-i", str(source)]
     if start is not None and start > 0.02:
         cmd.extend(["-ss", f"{start:.3f}"])
     if duration is not None:
         cmd.extend(["-t", f"{duration:.3f}"])
-    cmd.extend(["-map", "0", "-c", "copy", str(dest)])
+    cmd.extend([*media_map_args(0, attachments=False), "-c", "copy", str(dest)])
     _run(cmd, label=label, progress=progress, duration_hint=duration)
 
 
@@ -228,7 +256,13 @@ def cut_out_all_streams(
             progress.end_stage()
             step += 1
             progress.begin_stage("Finishing…", step / planned, 1.0)
-        _finalize(interim, output, edits, progress=progress)
+        _finalize(
+            interim,
+            output,
+            edits,
+            progress=progress,
+            attachment_sources=[source],
+        )
         if progress is not None:
             progress.end_stage()
 
@@ -300,7 +334,13 @@ def cut_out_single_video(
         if progress is not None:
             progress.end_stage()
             progress.begin_stage("Finishing…", 0.85, 1.0)
-        _finalize(interim, output, edits, progress=progress)
+        _finalize(
+            interim,
+            output,
+            edits,
+            progress=progress,
+            attachment_sources=[source],
+        )
         if progress is not None:
             progress.end_stage()
 
@@ -355,7 +395,19 @@ def cut_out_single_audio(
                 cmd.extend(["-map", "[aout]"])
             else:
                 cmd.extend(["-map", f"0:a:{a.type_index}"])
-        cmd.extend(["-map", "0:s?", "-c:v", "copy", "-c:a", "ac3", "-c:s", "copy", str(interim)])
+        cmd.extend(
+            [
+                "-map",
+                "0:s?",
+                "-c:v",
+                "copy",
+                "-c:a",
+                "ac3",
+                "-c:s",
+                "copy",
+                str(interim),
+            ]
+        )
         _run(
             cmd,
             label="single audio cut",
@@ -365,7 +417,13 @@ def cut_out_single_audio(
         if progress is not None:
             progress.end_stage()
             progress.begin_stage("Finishing…", 0.85, 1.0)
-        _finalize(interim, output, edits, progress=progress)
+        _finalize(
+            interim,
+            output,
+            edits,
+            progress=progress,
+            attachment_sources=[source],
+        )
         if progress is not None:
             progress.end_stage()
 
@@ -451,6 +509,7 @@ def flatten_edit_decision(
     with tempfile.TemporaryDirectory(prefix="donatello-flatten-") as tmp:
         tmp_path = Path(tmp)
         parts: list[Path] = []
+        att_sources: list[Path] = []
         for i, seg in enumerate(edl.segments):
             if progress is not None:
                 progress.begin_stage(
@@ -463,6 +522,7 @@ def flatten_edit_decision(
                 raise CutError(f"Segment source not found: {source}")
             if source == output:
                 raise CutError("Flatten output must differ from segment sources.")
+            att_sources.append(source)
             part = tmp_path / f"part{i:04d}.mkv"
             _extract_segment(
                 ff,
@@ -484,6 +544,12 @@ def flatten_edit_decision(
         if progress is not None:
             progress.end_stage()
             progress.begin_stage("Finishing…", (n + 1) / steps, 1.0)
-        _finalize(interim, output, edits, progress=progress)
+        _finalize(
+            interim,
+            output,
+            edits,
+            progress=progress,
+            attachment_sources=att_sources,
+        )
         if progress is not None:
             progress.end_stage()

@@ -138,7 +138,13 @@ def insert_all_streams(
             progress.end_stage()
             step += 1
             progress.begin_stage("Finishing…", step / planned, 1.0)
-        _finalize(interim, output, edits, progress=progress)
+        _finalize(
+            interim,
+            output,
+            edits,
+            progress=progress,
+            attachment_sources=[base, insert],
+        )
         if progress is not None:
             progress.end_stage()
 
@@ -219,7 +225,13 @@ def insert_single_video(
         if progress is not None:
             progress.end_stage()
             progress.begin_stage("Finishing…", 0.85, 1.0)
-        _finalize(interim, output, edits, progress=progress)
+        _finalize(
+            interim,
+            output,
+            edits,
+            progress=progress,
+            attachment_sources=[base, insert],
+        )
         if progress is not None:
             progress.end_stage()
 
@@ -278,13 +290,29 @@ def insert_single_audio(
             else:
                 cmd.extend(["-map", f"0:a:{a.type_index}"])
         cmd.extend(
-            ["-map", "0:s?", "-c:v", "copy", "-c:a", "ac3", "-c:s", "copy", str(interim)]
+            [
+                "-map",
+                "0:s?",
+                "-c:v",
+                "copy",
+                "-c:a",
+                "ac3",
+                "-c:s",
+                "copy",
+                str(interim),
+            ]
         )
         _run(cmd, label="insert audio", progress=progress)
         if progress is not None:
             progress.end_stage()
             progress.begin_stage("Finishing…", 0.85, 1.0)
-        _finalize(interim, output, edits, progress=progress)
+        _finalize(
+            interim,
+            output,
+            edits,
+            progress=progress,
+            attachment_sources=[base, insert],
+        )
         if progress is not None:
             progress.end_stage()
 
