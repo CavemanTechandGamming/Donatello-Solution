@@ -23,11 +23,11 @@ Premiere-inspired timeline editor for **MKV only** — cut, assemble, and export
 - **Insert** — splice another MKV into the timeline EDL at In or playhead (Export bakes); Insert selected still bakes one V/A stream
 - **Bin → timeline** — drag a Project clip onto the lanes (or OS-drop MKVs on the timeline) to insert
 - **Undo / Redo** — Edit menu or Ctrl+Z / Ctrl+Y after Razor, Delete, Insert, segment reorder, markers, track Edit, and Insert selected bake
-- **Track edit** — title and language on video / audio / subtitle; Default / Forced on subs; Edit lives on each timeline lane; written on Export
+- **Track edit** — title and language on video / audio / subtitle; Default / Forced on subs; audio volume (preview); **Sync** offset on audio/subs (± seconds vs video, preview + Export); Edit lives on each timeline lane
 - **Named markers** — **chapter** markers (gold) become chapters on single Export; opening an MKV that already has chapters loads them as chapter markers
 - **Split markers** — **Add split** (blue); title = output filename for Export multiple
 - **Multi-lane timeline** — one row per video / audio / subtitle with playhead, In/Out, and markers; click a lane or marker to seek; Sel / Edit on the lane; audio volume (0%–200%) in Edit; **‹ M** / **M ›** jump between markers; drag segments to reorder after Razor/Delete
-- **Workspace save / open** — `.donatello` restores the bin, active clip, marks, playhead, selection, track edits, markers, audio volumes, preview Audio/Subs picks, and timeline sequence; warns on close / Open Workspace if unsaved (`•` in the title when dirty)
+- **Workspace save / open** — `.donatello` restores the bin, active clip, marks, playhead, selection, track edits, markers, audio volumes, sync offsets, preview Audio/Subs picks, and timeline sequence; warns on close / Open Workspace if unsaved (`•` in the title when dirty)
 - **Autosave** — separate recovery slot (does not overwrite manual Save); interval in Settings (default 60s); File → Restore Autosave…; prompt after an unclean quit
 - **Export (single MKV)** — remux with track metadata and chapters; prefers stream copy when possible; bakes pending timeline edits; progress dialog with Cancel
 - **Export multiple…** — write several MKVs from split markers (In/Out as outer bounds when set); optional warn before discarding media before the first split; progress + Cancel

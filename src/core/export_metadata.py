@@ -90,16 +90,30 @@ def build_metadata_remux_command(
     edits: list[TrackEditState],
     *,
     chapters_file: Path | None = None,
+    stream_offsets: dict[int, float] | None = None,
+    output_duration: float | None = None,
 ) -> list[str]:
     """
     Stream-copy remux writing title/language (and sub Default/Forced) onto streams.
 
     Optional *chapters_file* is an FFMETADATA1 sidecar mapped as chapters.
+
+    Optional *stream_offsets* maps stream_index → seconds (positive = later vs
+    video). Non-zero offsets use extra ``-itsoffset`` inputs and explicit ``-map``.
+
+    When offsets are applied, *output_duration* (seconds) clamps the mux so a
+    delayed stream cannot stretch the file past the video timeline.
     """
     try:
         ffmpeg_bin = ffmpeg_binary()
     except FFmpegBootstrapError as exc:
         raise ExportError(str(exc)) from exc
+
+    offsets = {
+        int(stream_index): float(seconds)
+        for stream_index, seconds in (stream_offsets or {}).items()
+        if abs(float(seconds)) >= 1e-6
+    }
 
     cmd: list[str] = [
         ffmpeg_bin,
@@ -108,13 +122,47 @@ def build_metadata_remux_command(
         "-i",
         str(source),
     ]
+
+    # Unique non-zero offsets → extra inputs (input 0 stays unshifted for video).
+    offset_to_input: dict[float, int] = {0.0: 0}
+    for off in sorted({round(v, 6) for v in offsets.values()}):
+        if abs(off) < 1e-6 or off in offset_to_input:
+            continue
+        cmd.extend(["-itsoffset", f"{off:.6f}", "-i", str(source)])
+        offset_to_input[off] = len(offset_to_input)
+
     if chapters_file is not None:
         cmd.extend(["-i", str(chapters_file)])
 
-    cmd.extend(["-map", "0", "-c", "copy"])
+    if offsets:
+        # Explicit map so delayed streams come from the matching itsoffset input.
+        for edit in sorted(edits, key=lambda e: e.stream_index):
+            if edit.kind not in ("video", "audio", "subtitle"):
+                continue
+            letter = {"video": "v", "audio": "a", "subtitle": "s"}[edit.kind]
+            raw_off = float(offsets.get(edit.stream_index, 0.0))
+            # Video is always the timing reference — never shift it.
+            if edit.kind == "video":
+                in_i = 0
+            else:
+                key = round(raw_off, 6)
+                in_i = offset_to_input.get(key, 0) if abs(raw_off) >= 1e-6 else 0
+            cmd.extend(["-map", f"{in_i}:{letter}:{edit.type_index}"])
+        # Keep fonts / other Matroska attachments from the unshifted source.
+        cmd.extend(["-map", "0:t?"])
+        cmd.extend(["-c", "copy"])
+        # Delayed (+) streams push packet timestamps past video EOS and stretch
+        # the container (frozen last frame + trailing audio). Clamp to video length.
+        if output_duration is not None and float(output_duration) > 0:
+            cmd.extend(["-t", f"{float(output_duration):.3f}"])
+        cmd.extend(["-avoid_negative_ts", "make_zero"])
+    else:
+        cmd.extend(["-map", "0", "-c", "copy"])
+
     if chapters_file is not None:
-        # Drop source chapters; take ours from the metadata input.
-        cmd.extend(["-map_chapters", "1"])
+        # Chapters input is always last (after source + any itsoffset copies).
+        chapters_input = len(offset_to_input)
+        cmd.extend(["-map_chapters", str(chapters_input)])
     else:
         cmd.extend(["-map_chapters", "0"])
 
@@ -226,6 +274,7 @@ def export_with_track_metadata(
     range_start: float | None = None,
     range_end: float | None = None,
     progress: JobProgress | None = None,
+    stream_offsets: dict[int, float] | None = None,
 ) -> None:
     """
     Remux *source* to *output* with track metadata applied (stream copy).
@@ -235,6 +284,9 @@ def export_with_track_metadata(
 
     When *markers* are provided, they are written as MKV chapters (shifted
     into the exported range when trimming).
+
+    Optional *stream_offsets* (stream_index → seconds) shifts audio/subtitle
+    streams relative to video on Export (positive = later).
     """
     source = Path(source).expanduser().resolve()
     output = Path(output).expanduser().resolve()
@@ -253,6 +305,7 @@ def export_with_track_metadata(
     trim = range_start is not None or range_end is not None
     start = float(range_start) if range_start is not None else 0.0
     end = float(range_end) if range_end is not None else src_duration
+    offsets = dict(stream_offsets or {})
 
     if trim:
         if start < 0 or (range_end is not None and end < 0):
@@ -292,6 +345,7 @@ def export_with_track_metadata(
                 markers=chapter_list,
                 duration=out_duration,
                 progress=progress,
+                stream_offsets=offsets,
             )
             if progress is not None:
                 progress.end_stage()
@@ -306,6 +360,7 @@ def export_with_track_metadata(
         markers=chapter_markers(list(markers or [])),
         duration=src_duration if src_duration > 0 else None,
         progress=progress,
+        stream_offsets=offsets,
     )
     if progress is not None:
         progress.end_stage()
@@ -319,20 +374,28 @@ def _remux_with_metadata(
     markers: list[TimelineMarker],
     duration: float | None,
     progress: JobProgress | None = None,
+    stream_offsets: dict[int, float] | None = None,
 ) -> None:
     chapter_list = list(markers)
     use_chapters = bool(chapter_list)
+    offsets = dict(stream_offsets or {})
 
     def _run(chapters_file: Path | None) -> None:
         cmd = build_metadata_remux_command(
-            source, output, edits, chapters_file=chapters_file
+            source,
+            output,
+            edits,
+            chapters_file=chapters_file,
+            stream_offsets=offsets,
+            output_duration=duration,
         )
         logger.info(
-            "Export %s → %s (%d track edit(s), %d chapter(s))",
+            "Export %s → %s (%d track edit(s), %d chapter(s), %d offset(s))",
             source.name,
             output,
             len(edits),
             len(chapter_list) if chapters_file else 0,
+            sum(1 for v in offsets.values() if abs(float(v)) >= 1e-6),
         )
         logger.debug("ffmpeg export: %s", " ".join(cmd))
         _run_ffmpeg(

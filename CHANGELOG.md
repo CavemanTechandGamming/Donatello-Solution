@@ -43,7 +43,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Softsub **attachments** (fonts, etc.) — probe counts them; cut / flatten / insert bake re-merge attachments from source MKV(s) after concat; simple Export remux keeps them via `-map 0`
 - **Preview Audio / Subs** — dropdowns above the preview to pick which audio track to hear and which softsub to show (text ASS/SRT/SSA/mov_text **and** bitmap PGS); picks persist in the workspace; Sel stays for Delete/Insert only
 - **FFmpeg check** — startup verifies FFmpeg quietly when OK; missing FFmpeg shows a plain fix dialog; Help → Check FFmpeg… and Settings → Help (status + Check button)
-- **Undo / Redo** covers marker add/split/droppers, Markers dialog edits, track Edit (title/lang/flags/volume), and Insert selected bake (restores the pre-bake clip)
+- **Undo / Redo** covers marker add/split/droppers, Markers dialog edits, track Edit (title/lang/flags/volume/sync offset), and Insert selected bake (restores the pre-bake clip)
+- **Track re-sync** — Sync offset (seconds, + later / − earlier vs video) on Edit for audio and subtitle tracks; preview applies it; Export remuxes with `-itsoffset`; persisted in the workspace; undoable
 
 ### Changed
 
@@ -56,6 +57,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Export failure on files with softsubs (`-disposition:s:N` instead of invalid `s:s:N`)
 - Hover tooltips no longer stick open after leaving a control or opening an OptionMenu
+- Track Sync Export no longer stretches duration when delaying audio/subs (clamp remux to video length)
 
 ### Removed
 

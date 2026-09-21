@@ -1,4 +1,4 @@
-"""Edit-track dialog — title, language by name, Default/Forced (subs), volume (audio)."""
+"""Edit-track dialog — title, language by name, Default/Forced (subs), volume (audio), sync offset (A/S)."""
 
 from __future__ import annotations
 
@@ -10,6 +10,7 @@ import customtkinter as ctk
 from src.core.languages import code_from_name, language_names, name_from_code
 
 _VOLUME_MAX = 2.0
+_OFFSET_MAX = 3600.0
 
 
 @dataclass(frozen=True)
@@ -19,6 +20,7 @@ class TrackEditFields:
     is_default: bool
     is_forced: bool
     volume: float | None = None  # 0.0–2.0 when editing audio; else None
+    sync_offset: float | None = None  # seconds; audio/sub only; + = later
 
 
 def ask_edit_track(
@@ -32,8 +34,10 @@ def ask_edit_track(
     show_disposition: bool,
     show_volume: bool = False,
     volume: float = 1.0,
+    show_sync_offset: bool = False,
+    sync_offset: float = 0.0,
 ) -> TrackEditFields | None:
-    """Edit title + language; Default/Forced for subs; volume for audio."""
+    """Edit title + language; Default/Forced for subs; volume for audio; sync for A/S."""
     dialog = _EditTrackDialog(
         master,
         heading=heading,
@@ -44,6 +48,8 @@ def ask_edit_track(
         show_disposition=show_disposition,
         show_volume=show_volume,
         volume=volume,
+        show_sync_offset=show_sync_offset,
+        sync_offset=sync_offset,
     )
     dialog.wait_window()
     return dialog.result
@@ -65,6 +71,16 @@ def _center_on_parent(window, parent) -> None:
         pass
 
 
+def _format_offset(seconds: float) -> str:
+    value = float(seconds)
+    if abs(value) < 1e-9:
+        return "0"
+    text = f"{value:.3f}".rstrip("0").rstrip(".")
+    if value > 0 and not text.startswith("+"):
+        return f"+{text}"
+    return text
+
+
 class _EditTrackDialog(ctk.CTkToplevel):
     def __init__(
         self,
@@ -78,6 +94,8 @@ class _EditTrackDialog(ctk.CTkToplevel):
         show_disposition: bool,
         show_volume: bool,
         volume: float,
+        show_sync_offset: bool,
+        sync_offset: float,
     ):
         super().__init__(master)
         self.title("Edit track")
@@ -86,6 +104,7 @@ class _EditTrackDialog(ctk.CTkToplevel):
         self.grab_set()
         self.result: TrackEditFields | None = None
         self._show_volume = show_volume
+        self._show_sync_offset = show_sync_offset
 
         names = list(language_names())
         known = name_from_code(language)
@@ -178,6 +197,35 @@ class _EditTrackDialog(ctk.CTkToplevel):
             ).pack(side="left", padx=(6, 0))
             row += 1
 
+        self._offset_var: StringVar | None = None
+        if show_sync_offset:
+            clamped = max(-_OFFSET_MAX, min(_OFFSET_MAX, float(sync_offset)))
+            self._offset_var = StringVar(value=_format_offset(clamped))
+            ctk.CTkLabel(self, text="Sync", anchor="w").grid(
+                row=row, column=0, sticky="nw", padx=(20, 12), pady=(10, 6)
+            )
+            off_col = ctk.CTkFrame(self, fg_color="transparent")
+            off_col.grid(row=row, column=1, sticky="ew", padx=(0, 20), pady=(10, 6))
+            entry_row = ctk.CTkFrame(off_col, fg_color="transparent")
+            entry_row.pack(anchor="w")
+            self._offset_entry = ctk.CTkEntry(
+                entry_row, width=96, textvariable=self._offset_var
+            )
+            self._offset_entry.pack(side="left")
+            ctk.CTkLabel(
+                entry_row,
+                text="sec",
+                anchor="w",
+                text_color=("gray40", "gray65"),
+            ).pack(side="left", padx=(6, 0))
+            ctk.CTkLabel(
+                off_col,
+                text="+ later · − earlier  (vs video)",
+                anchor="w",
+                text_color=("gray40", "gray65"),
+            ).pack(anchor="w", pady=(4, 0))
+            row += 1
+
         buttons = ctk.CTkFrame(self, fg_color="transparent")
         buttons.grid(row=row, column=0, columnspan=2, sticky="e", padx=20, pady=(8, 16))
         ctk.CTkButton(
@@ -200,6 +248,8 @@ class _EditTrackDialog(ctk.CTkToplevel):
             height += 60
         if show_volume:
             height += 80
+        if show_sync_offset:
+            height += 70
         self.geometry(f"480x{max(height, self.winfo_reqheight())}")
         self.after(10, lambda: _center_on_parent(self, master))
         self.after(50, self._title.focus_set)
@@ -230,6 +280,18 @@ class _EditTrackDialog(ctk.CTkToplevel):
         finally:
             self._syncing_volume = False
 
+    def _parse_offset(self) -> float:
+        if self._offset_var is None:
+            return 0.0
+        raw = (self._offset_var.get() or "").strip().replace("s", "").replace("S", "")
+        if not raw or raw in ("+", "-"):
+            return 0.0
+        try:
+            value = float(raw)
+        except ValueError:
+            return 0.0
+        return max(-_OFFSET_MAX, min(_OFFSET_MAX, value))
+
     def _language_code(self) -> str:
         name = self._language.get()
         if self._extra_name and name == self._extra_name:
@@ -242,6 +304,9 @@ class _EditTrackDialog(ctk.CTkToplevel):
         volume = None
         if self._show_volume and self._volume_var is not None:
             volume = float(max(0.0, min(_VOLUME_MAX, self._volume_var.get())))
+        sync_offset = None
+        if self._show_sync_offset:
+            sync_offset = self._parse_offset()
         self._finish(
             TrackEditFields(
                 title=self._title.get(),
@@ -249,6 +314,7 @@ class _EditTrackDialog(ctk.CTkToplevel):
                 is_default=bool(self._default.get()),
                 is_forced=bool(self._forced.get()),
                 volume=volume,
+                sync_offset=sync_offset,
             )
         )
 

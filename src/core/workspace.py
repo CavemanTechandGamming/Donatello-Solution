@@ -38,6 +38,8 @@ class WorkspaceState:
     markers: dict[str, list[TimelineMarker]] = field(default_factory=dict)
     # media path key → audio stream_index → preview volume 0..2 (100% = 1.0)
     audio_volumes: dict[str, dict[int, float]] = field(default_factory=dict)
+    # media path key → audio/sub stream_index → sync offset seconds (positive = later)
+    track_offsets: dict[str, dict[int, float]] = field(default_factory=dict)
     # media path key → stream_index heard in preview (audio)
     preview_audio_stream: dict[str, int] = field(default_factory=dict)
     # media path key → stream_index shown in preview (subtitle); omit / missing = off
@@ -106,6 +108,21 @@ def state_to_dict(state: WorkspaceState) -> dict:
             for stream_index, vol in by_stream.items()
         }
 
+    track_offsets: dict[str, dict[str, float]] = {}
+    for media_key, by_stream in state.track_offsets.items():
+        cleaned: dict[str, float] = {}
+        for stream_index, raw in by_stream.items():
+            try:
+                value = float(raw)
+            except (TypeError, ValueError):
+                continue
+            value = max(-3600.0, min(3600.0, value))
+            if abs(value) < 1e-6:
+                continue
+            cleaned[str(stream_index)] = value
+        if cleaned:
+            track_offsets[media_key] = cleaned
+
     preview_audio_stream = {
         media_key: int(stream_index)
         for media_key, stream_index in state.preview_audio_stream.items()
@@ -128,6 +145,7 @@ def state_to_dict(state: WorkspaceState) -> dict:
         "track_edits": track_edits,
         "markers": markers,
         "audio_volumes": audio_volumes,
+        "track_offsets": track_offsets,
         "preview_audio_stream": preview_audio_stream,
         "preview_subtitle_stream": preview_subtitle_stream,
         "sequences": sequences_to_dict(state.sequences),
@@ -230,6 +248,33 @@ def state_from_dict(data: object) -> WorkspaceState:
             if str(media_key) != key:
                 volumes_out[str(media_key)] = parsed
 
+    offsets_out: dict[str, dict[int, float]] = {}
+    offsets_raw = data.get("track_offsets") or {}
+    if isinstance(offsets_raw, dict):
+        for media_key, by_stream in offsets_raw.items():
+            if not isinstance(by_stream, dict):
+                continue
+            parsed_off: dict[int, float] = {}
+            for stream_key, raw_off in by_stream.items():
+                try:
+                    stream_index = int(stream_key)
+                    value = float(raw_off)
+                except (TypeError, ValueError):
+                    continue
+                value = max(-3600.0, min(3600.0, value))
+                if abs(value) < 1e-6:
+                    continue
+                parsed_off[stream_index] = value
+            if not parsed_off:
+                continue
+            try:
+                key = _path_key(Path(str(media_key)))
+            except OSError:
+                key = str(media_key)
+            offsets_out[key] = parsed_off
+            if str(media_key) != key:
+                offsets_out[str(media_key)] = parsed_off
+
     def _stream_map(raw: object) -> dict[str, int]:
         out: dict[str, int] = {}
         if not isinstance(raw, dict):
@@ -271,6 +316,7 @@ def state_from_dict(data: object) -> WorkspaceState:
         track_edits=edits_out,
         markers=markers_out,
         audio_volumes=volumes_out,
+        track_offsets=offsets_out,
         preview_audio_stream=preview_audio_out,
         preview_subtitle_stream=preview_sub_out,
         sequences=sequences_out,

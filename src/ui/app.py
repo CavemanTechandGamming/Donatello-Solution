@@ -40,6 +40,7 @@ from src.core.undo import (
     copy_edl,
     copy_markers,
     copy_track_edits,
+    copy_track_offsets,
 )
 from src.core.autosave import (
     autosave_exists,
@@ -151,6 +152,7 @@ class DonatelloApp(ctk.CTk, TkinterDnD.DnDWrapper):
         self._edits: dict[str, dict[int, TrackEditState]] = {}
         self._markers: dict[str, list[TimelineMarker]] = {}
         self._audio_volumes: dict[str, dict[int, float]] = {}
+        self._track_offsets: dict[str, dict[int, float]] = {}
         self._preview_audio_stream: dict[str, int] = {}
         self._preview_subtitle_stream: dict[str, int] = {}
         self._sequences: dict[str, EditDecision] = {}
@@ -1147,6 +1149,7 @@ class DonatelloApp(ctk.CTk, TkinterDnD.DnDWrapper):
             track_edits={k: dict(v) for k, v in self._edits.items()},
             markers={k: list(v) for k, v in self._markers.items()},
             audio_volumes={k: dict(v) for k, v in self._audio_volumes.items()},
+            track_offsets={k: dict(v) for k, v in self._track_offsets.items()},
             preview_audio_stream=dict(self._preview_audio_stream),
             preview_subtitle_stream=dict(self._preview_subtitle_stream),
             sequences={k: EditDecision(segments=list(v.segments)) for k, v in self._sequences.items()},
@@ -1287,6 +1290,7 @@ class DonatelloApp(ctk.CTk, TkinterDnD.DnDWrapper):
         self._edits.clear()
         self._markers.clear()
         self._audio_volumes.clear()
+        self._track_offsets.clear()
         self._preview_audio_stream.clear()
         self._preview_subtitle_stream.clear()
         self._sequences.clear()
@@ -1353,6 +1357,9 @@ class DonatelloApp(ctk.CTk, TkinterDnD.DnDWrapper):
         self._markers = {k: list(v) for k, v in state.markers.items()}
         self._audio_volumes = {
             k: dict(v) for k, v in state.audio_volumes.items()
+        }
+        self._track_offsets = {
+            k: dict(v) for k, v in state.track_offsets.items()
         }
         self._preview_audio_stream = dict(state.preview_audio_stream)
         self._preview_subtitle_stream = dict(state.preview_subtitle_stream)
@@ -1513,6 +1520,8 @@ class DonatelloApp(ctk.CTk, TkinterDnD.DnDWrapper):
                     base.is_forced = prior.is_forced
             edits.append(base)
 
+        stream_offsets = copy_track_offsets(self._track_offsets.get(key) or {})
+
         logger.info("Export requested: %s → %s", self._active_path.name, out)
         chapter_markers_list = chapter_markers(list(self._markers.get(key) or []))
         edl = self._active_sequence()
@@ -1581,6 +1590,7 @@ class DonatelloApp(ctk.CTk, TkinterDnD.DnDWrapper):
                     range_start=range_start,
                     range_end=range_end,
                     progress=prog,
+                    stream_offsets=stream_offsets,
                 )
                 tmp_out.replace(out)
                 tmp_out = None
@@ -1595,6 +1605,7 @@ class DonatelloApp(ctk.CTk, TkinterDnD.DnDWrapper):
                     range_start=range_start,
                     range_end=range_end,
                     progress=prog,
+                    stream_offsets=stream_offsets,
                 )
             if needs_flatten:
                 prog.end_stage()
@@ -1766,6 +1777,9 @@ class DonatelloApp(ctk.CTk, TkinterDnD.DnDWrapper):
             return
 
         edits = self._track_edits_for_export(current)
+        stream_offsets = copy_track_offsets(
+            self._track_offsets.get(_path_key(self._active_path)) or {}
+        )
         flat_path: Path | None = None
         export_source = Path(self._active_path)
         written: list[Path] = []
@@ -1776,6 +1790,7 @@ class DonatelloApp(ctk.CTk, TkinterDnD.DnDWrapper):
             "export_source": export_source,
             "flat_path": None,
             "written": written,
+            "stream_offsets": stream_offsets,
         }
 
         def _job(prog) -> list[Path]:
@@ -1848,6 +1863,7 @@ class DonatelloApp(ctk.CTk, TkinterDnD.DnDWrapper):
                     range_start=seg.start,
                     range_end=seg.end,
                     progress=prog,
+                    stream_offsets=bag.get("stream_offsets") or {},
                 )
                 prog.end_stage()
                 written.append(out)
@@ -2488,6 +2504,7 @@ class DonatelloApp(ctk.CTk, TkinterDnD.DnDWrapper):
             playhead=float(self._playhead_timeline()),
             track_edits=copy_track_edits(edits),
             audio_volumes=copy_audio_volumes(self._audio_volumes.get(key) or {}),
+            track_offsets=copy_track_offsets(self._track_offsets.get(key) or {}),
         )
 
     def _push_undo(self) -> None:
@@ -2522,6 +2539,7 @@ class DonatelloApp(ctk.CTk, TkinterDnD.DnDWrapper):
         self._markers[cp.media_key] = copy_markers(cp.markers)
         self._edits[cp.media_key] = copy_track_edits(cp.track_edits)
         self._audio_volumes[cp.media_key] = copy_audio_volumes(cp.audio_volumes)
+        self._track_offsets[cp.media_key] = copy_track_offsets(cp.track_offsets)
         self._mark_in = cp.mark_in
         self._mark_out = cp.mark_out
         self._update_marks_label()
@@ -2586,6 +2604,25 @@ class DonatelloApp(ctk.CTk, TkinterDnD.DnDWrapper):
             self._player.set_volume(value)
         self._refresh_window_title()
 
+    def _track_offset_map(self) -> dict[int, float]:
+        if self._active_path is None:
+            return {}
+        key = _path_key(self._active_path)
+        return self._track_offsets.setdefault(key, {})
+
+    def _get_track_offset(self, stream_index: int) -> float:
+        return float(self._track_offset_map().get(stream_index, 0.0))
+
+    def _set_track_offset(self, stream_index: int, seconds: float) -> None:
+        value = float(max(-3600.0, min(3600.0, seconds)))
+        offsets = self._track_offset_map()
+        if abs(value) < 1e-6:
+            offsets.pop(stream_index, None)
+        else:
+            offsets[stream_index] = value
+        self._restart_preview_if_playing()
+        self._refresh_window_title()
+
     def _restore_preview_track_picks(self, result: ProbeResult) -> None:
         """Load Mon/Vis picks for this clip (defaults: first audio, subs off)."""
         key = _path_key(result.path)
@@ -2615,12 +2652,15 @@ class DonatelloApp(ctk.CTk, TkinterDnD.DnDWrapper):
             self._player.set_audio_type_index(0)
             self._player.set_subtitle_type_index(None)
             self._player.set_volume(1.0)
+            self._player.set_audio_sync_offset(0.0)
+            self._player.set_subtitle_sync_offset(0.0)
             return
 
         audios = [t for t in self._result.tracks if t.kind == "audio"]
         if not audios:
             self._player.set_audio_type_index(0)
             self._player.set_volume(1.0)
+            self._player.set_audio_sync_offset(0.0)
         else:
             chosen = audios[0]
             if self._monitor_audio_stream_index is not None:
@@ -2635,17 +2675,23 @@ class DonatelloApp(ctk.CTk, TkinterDnD.DnDWrapper):
                 )
             self._player.set_audio_type_index(chosen.type_index)
             self._player.set_volume(self._get_audio_volume(chosen.stream_index))
+            self._player.set_audio_sync_offset(
+                self._get_track_offset(chosen.stream_index)
+            )
 
         subs = [t for t in self._result.tracks if t.kind == "subtitle"]
         sub_type: int | None = None
+        sub_offset = 0.0
         if self._visible_subtitle_stream_index is not None:
             for track in subs:
                 if track.stream_index == self._visible_subtitle_stream_index:
                     sub_type = track.type_index
+                    sub_offset = self._get_track_offset(track.stream_index)
                     break
             if sub_type is None:
                 self._visible_subtitle_stream_index = None
         self._player.set_subtitle_type_index(sub_type)
+        self._player.set_subtitle_sync_offset(sub_offset)
 
     def _restart_preview_if_playing(self) -> None:
         """Re-apply monitor settings; restart so a mid-play change is heard/seen."""
@@ -3521,6 +3567,7 @@ class DonatelloApp(ctk.CTk, TkinterDnD.DnDWrapper):
             return
 
         heading = f"{edit.kind.capitalize()} stream {edit.type_index}  ({track.codec})"
+        show_sync = edit.kind in ("audio", "subtitle")
         result = ask_edit_track(
             self,
             heading=heading,
@@ -3531,6 +3578,8 @@ class DonatelloApp(ctk.CTk, TkinterDnD.DnDWrapper):
             show_disposition=(edit.kind == "subtitle"),
             show_volume=(edit.kind == "audio"),
             volume=self._get_audio_volume(stream_index),
+            show_sync_offset=show_sync,
+            sync_offset=self._get_track_offset(stream_index),
         )
         if result is None:
             return
@@ -3543,6 +3592,8 @@ class DonatelloApp(ctk.CTk, TkinterDnD.DnDWrapper):
             edit.is_forced = result.is_forced
         if edit.kind == "audio" and result.volume is not None:
             self._set_audio_volume(stream_index, result.volume)
+        if show_sync and result.sync_offset is not None:
+            self._set_track_offset(stream_index, result.sync_offset)
         self._refresh_timeline_lanes()
 
 

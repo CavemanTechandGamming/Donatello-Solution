@@ -27,6 +27,7 @@ class ActiveSubtitle:
     y: int = 0
     src_w: int = 0
     src_h: int = 0
+    start: float = 0.0
 
 
 def subtitle_set_times(subset: SubtitleSet) -> tuple[float, float]:
@@ -44,9 +45,12 @@ def actives_from_subset(
     *,
     src_w: int,
     src_h: int,
+    time_offset: float = 0.0,
 ) -> list[ActiveSubtitle]:
     """Convert a SubtitleSet into overlay payloads (empty list = clear display)."""
     start, end = subtitle_set_times(subset)
+    start += float(time_offset)
+    end += float(time_offset)
     if not subset.rects:
         return []
     out: list[ActiveSubtitle] = []
@@ -61,6 +65,7 @@ def actives_from_subset(
                 continue
             out.append(
                 ActiveSubtitle(
+                    start=start,
                     end=end,
                     kind="text",
                     text=text,
@@ -74,6 +79,7 @@ def actives_from_subset(
                 continue
             out.append(
                 ActiveSubtitle(
+                    start=start,
                     end=end,
                     kind="bitmap",
                     image=img,
@@ -86,8 +92,6 @@ def actives_from_subset(
     # Empty rects after a PGS clear still produce end time — treat as clear.
     if not out and subset.rects:
         return []
-    # Stamp start unused; caller replaces active list when a new set arrives.
-    _ = start
     return out
 
 
@@ -133,6 +137,11 @@ def _read_palette(bmp: BitmapSubtitle) -> np.ndarray:
 
 def expire_actives(actives: list[ActiveSubtitle], t: float) -> list[ActiveSubtitle]:
     return [a for a in actives if a.end > t + 1e-3]
+
+
+def visible_actives(actives: list[ActiveSubtitle], t: float) -> list[ActiveSubtitle]:
+    """Actives whose display window covers *t* (sync offset already baked into times)."""
+    return [a for a in actives if a.start <= t + 1e-3 and a.end > t + 1e-3]
 
 
 def composite_subtitles(

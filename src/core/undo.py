@@ -12,7 +12,7 @@ from src.core.sequence import EditDecision, TimelineSegment
 
 @dataclass
 class TimelineCheckpoint:
-    """Snapshot of the active clip — EDL, marks, markers, track edits, volumes."""
+    """Snapshot of the active clip — EDL, marks, markers, track edits, volumes, sync."""
 
     media_key: str
     segments: list[TimelineSegment]
@@ -22,6 +22,8 @@ class TimelineCheckpoint:
     playhead: float
     track_edits: dict[int, TrackEditState] = field(default_factory=dict)
     audio_volumes: dict[int, float] = field(default_factory=dict)
+    # stream_index → seconds (audio/sub); positive = later vs video
+    track_offsets: dict[int, float] = field(default_factory=dict)
 
     def edl(self) -> EditDecision:
         return EditDecision(segments=list(self.segments))
@@ -101,3 +103,21 @@ def copy_audio_volumes(volumes: dict[int, float]) -> dict[int, float]:
         int(stream_index): float(max(0.0, min(2.0, vol)))
         for stream_index, vol in volumes.items()
     }
+
+
+_OFFSET_MAX = 3600.0  # ±1 hour
+
+
+def copy_track_offsets(offsets: dict[int, float]) -> dict[int, float]:
+    """Copy sync offsets; drop near-zero entries."""
+    out: dict[int, float] = {}
+    for stream_index, raw in offsets.items():
+        try:
+            value = float(raw)
+        except (TypeError, ValueError):
+            continue
+        value = max(-_OFFSET_MAX, min(_OFFSET_MAX, value))
+        if abs(value) < 1e-6:
+            continue
+        out[int(stream_index)] = value
+    return out

@@ -28,6 +28,8 @@ from src.core.preview_subs import (
     actives_from_subset,
     composite_subtitles,
     expire_actives,
+    subtitle_set_times,
+    visible_actives,
 )
 
 _AUDIO_Q_SIZE = 256
@@ -79,6 +81,9 @@ class PreviewPlayer:
         self._audio_type_index = 0
         # None = subtitles hidden in preview
         self._subtitle_type_index: int | None = None
+        # Per-track sync vs video (seconds); positive = later
+        self._audio_sync_offset = 0.0
+        self._subtitle_sync_offset = 0.0
         self._video_src_size: tuple[int, int] = (0, 0)
 
     @property
@@ -123,6 +128,14 @@ class PreviewPlayer:
             self._subtitle_type_index = None
         else:
             self._subtitle_type_index = max(0, int(type_index))
+
+    def set_audio_sync_offset(self, seconds: float) -> None:
+        """Shift preview audio vs video (seconds; positive = later)."""
+        self._audio_sync_offset = float(seconds)
+
+    def set_subtitle_sync_offset(self, seconds: float) -> None:
+        """Shift preview subs vs video (seconds; positive = later)."""
+        self._subtitle_sync_offset = float(seconds)
 
     def open(self, path: Path, duration: float | None = None) -> None:
         self.stop()
@@ -406,9 +419,15 @@ class PreviewPlayer:
 
             sub_stream = self._resolve_subtitle_stream(container)
             actives: list[ActiveSubtitle] = []
+            sub_clear_at: float | None = None
+            sub_off = float(self._subtitle_sync_offset)
 
-            # Seek slightly early so bitmap (PGS) decoder state can catch up.
-            seek_t = max(0.0, seconds - (1.0 if sub_stream is not None else 0.0))
+            # Seek early so delayed (+offset) cues are demuxed before the frame,
+            # and so bitmap (PGS) decoder state can catch up.
+            early = 1.0 if sub_stream is not None else 0.0
+            if sub_stream is not None and sub_off > 0:
+                early = max(early, sub_off + 0.25)
+            seek_t = max(0.0, seconds - early)
             offset = int(seek_t / video.time_base) if video.time_base else 0
             try:
                 container.seek(offset, stream=video, any_frame=False, backward=True)
@@ -422,8 +441,15 @@ class PreviewPlayer:
                     sub_stream is not None
                     and packet.stream.index == sub_stream.index
                 ):
-                    actives = self._ingest_subtitle_packet(
-                        sub_stream, packet, actives, src_w=src_w, src_h=src_h
+                    actives, sub_clear_at = self._ingest_subtitle_packet(
+                        sub_stream,
+                        packet,
+                        actives,
+                        src_w=src_w,
+                        src_h=src_h,
+                        time_offset=sub_off,
+                        clear_at=sub_clear_at,
+                        video_pts=seconds,
                     )
                     continue
                 if packet.stream.index != video.index:
@@ -443,8 +469,13 @@ class PreviewPlayer:
                     if pts + 0.05 < seconds:
                         continue
                     image = self._scale(frame.to_image())
+                    if sub_clear_at is not None and seconds >= sub_clear_at:
+                        actives = []
+                        sub_clear_at = None
                     actives = expire_actives(actives, seconds)
-                    return composite_subtitles(image, actives)
+                    return composite_subtitles(
+                        image, visible_actives(actives, seconds)
+                    )
 
             if image is None:
                 container.seek(0)
@@ -453,8 +484,10 @@ class PreviewPlayer:
                     break
             if image is None:
                 return None
+            if sub_clear_at is not None and seconds >= sub_clear_at:
+                actives = []
             actives = expire_actives(actives, seconds)
-            return composite_subtitles(image, actives)
+            return composite_subtitles(image, visible_actives(actives, seconds))
 
     def _resolve_subtitle_stream(self, container):  # noqa: ANN001
         if self._subtitle_type_index is None:
@@ -473,21 +506,30 @@ class PreviewPlayer:
         *,
         src_w: int,
         src_h: int,
-    ) -> list[ActiveSubtitle]:
+        time_offset: float = 0.0,
+        clear_at: float | None = None,
+        video_pts: float = 0.0,
+    ) -> tuple[list[ActiveSubtitle], float | None]:
         try:
             subset = sub_stream.decode2(packet)
         except Exception:
-            return actives
+            return actives, clear_at
         if subset is None:
-            return actives
-        new_actives = actives_from_subset(subset, src_w=src_w, src_h=src_h)
-        # A decode with no drawable rects clears the screen (PGS clear).
-        if not subset.rects or not new_actives:
-            if not subset.rects:
-                return []
-            # Timed empty → still replace
-            return new_actives
-        return new_actives
+            return actives, clear_at
+        if not subset.rects:
+            # PGS clear — honor sync offset so clears stay lined up with cues.
+            start, _end = subtitle_set_times(subset)
+            return actives, start + float(time_offset)
+        new_actives = actives_from_subset(
+            subset,
+            src_w=src_w,
+            src_h=src_h,
+            time_offset=time_offset,
+        )
+        kept = expire_actives(actives, video_pts)
+        if not new_actives:
+            return kept, clear_at
+        return kept + new_actives, clear_at
 
     def _playback_loop(self) -> None:
         path = self._path
@@ -514,6 +556,9 @@ class PreviewPlayer:
 
                 sub_stream = self._resolve_subtitle_stream(container)
                 actives: list[ActiveSubtitle] = []
+                sub_clear_at: float | None = None
+                audio_off = float(self._audio_sync_offset)
+                sub_off = float(self._subtitle_sync_offset)
 
                 resampler: AudioResampler | None = None
                 if audio is not None:
@@ -525,12 +570,30 @@ class PreviewPlayer:
                         rate=rate,
                     )
 
-                seek_t = max(0.0, start_pos - (1.0 if sub_stream is not None else 0.0))
+                seek_base = start_pos
+                if audio is not None and audio_off < 0:
+                    seek_base = min(seek_base, start_pos + audio_off)
+                if sub_stream is not None and sub_off > 0:
+                    seek_base = min(seek_base, start_pos - sub_off)
+                early = 1.0 if sub_stream is not None else 0.0
+                seek_t = max(0.0, seek_base - early)
                 offset = int(seek_t / video.time_base) if video.time_base else 0
                 try:
                     container.seek(offset, stream=video, any_frame=False, backward=True)
                 except av.AVError:
                     container.seek(0)
+
+                # Positive audio offset: delay monitor with leading silence.
+                if audio is not None and audio_off > 1e-4:
+                    n = int(round(audio_off * self._sample_rate))
+                    if n > 0:
+                        silence = np.zeros((n, self._channels), dtype=np.float32)
+                        chunk = 4096
+                        for i in range(0, n, chunk):
+                            self._enqueue_monitor_audio_array(silence[i : i + chunk])
+
+                # Audio earlier than video: start enqueue before video display time.
+                audio_gate = start_pos + audio_off if audio_off < 0 else start_pos
 
                 wall0 = time.perf_counter()
                 streams = [video]
@@ -546,8 +609,15 @@ class PreviewPlayer:
                         sub_stream is not None
                         and packet.stream.index == sub_stream.index
                     ):
-                        actives = self._ingest_subtitle_packet(
-                            sub_stream, packet, actives, src_w=src_w, src_h=src_h
+                        actives, sub_clear_at = self._ingest_subtitle_packet(
+                            sub_stream,
+                            packet,
+                            actives,
+                            src_w=src_w,
+                            src_h=src_h,
+                            time_offset=sub_off,
+                            clear_at=sub_clear_at,
+                            video_pts=self._position,
                         )
                         continue
                     try:
@@ -558,12 +628,20 @@ class PreviewPlayer:
                         if self._stop.is_set():
                             break
                         if isinstance(frame, av.AudioFrame):
-                            if resampler is not None:
-                                try:
-                                    for out in resampler.resample(frame):
-                                        self._enqueue_monitor_audio(out)
-                                except Exception:
-                                    continue
+                            if resampler is None:
+                                continue
+                            pts_a = (
+                                float(frame.pts * audio.time_base)
+                                if audio is not None and frame.pts is not None
+                                else start_pos
+                            )
+                            if pts_a + 0.02 < audio_gate:
+                                continue
+                            try:
+                                for out in resampler.resample(frame):
+                                    self._enqueue_monitor_audio(out)
+                            except Exception:
+                                continue
                             continue
                         if not isinstance(frame, av.VideoFrame):
                             continue
@@ -581,8 +659,13 @@ class PreviewPlayer:
                             time.sleep(min(delay, 0.02))
                             delay = target - time.perf_counter()
                         image = self._scale(frame.to_image())
+                        if sub_clear_at is not None and pts >= sub_clear_at:
+                            actives = []
+                            sub_clear_at = None
                         actives = expire_actives(actives, pts)
-                        image = composite_subtitles(image, actives)
+                        image = composite_subtitles(
+                            image, visible_actives(actives, pts)
+                        )
                         preview = PreviewFrame(image=image, position=pts)
                         # Drop oldest if UI is slow
                         try:
@@ -616,6 +699,30 @@ class PreviewPlayer:
             except queue.Full:
                 pass
             self._playing = False
+
+    def _enqueue_monitor_audio_array(self, arr: np.ndarray) -> None:
+        """Queue a pre-built float32 (samples, channels) block."""
+        if arr.size == 0:
+            return
+        arr = np.asarray(arr, dtype=np.float32)
+        if arr.ndim == 1:
+            arr = arr.reshape(-1, 1)
+        if arr.shape[1] < self._channels:
+            pad = np.zeros(
+                (arr.shape[0], self._channels - arr.shape[1]), dtype=np.float32
+            )
+            arr = np.concatenate([arr, pad], axis=1)
+        elif arr.shape[1] > self._channels:
+            arr = arr[:, : self._channels]
+        if self._volume != 1.0:
+            arr = arr * self._volume
+            np.clip(arr, -1.0, 1.0, out=arr)
+        while not self._stop.is_set():
+            try:
+                self._audio_q.put(arr, timeout=0.05)
+                return
+            except queue.Full:
+                continue
 
     def _enqueue_monitor_audio(self, frame: av.AudioFrame) -> None:
         """Queue one float frame (monitor channel count) for PortAudio."""
