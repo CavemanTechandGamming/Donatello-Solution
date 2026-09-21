@@ -30,6 +30,7 @@ Thumbs.db
 *.leo
 *.donatello
 !sample/**
+_smoke/
 
 # PyInstaller (local only — publish via Actions artifacts if needed)
 build/
