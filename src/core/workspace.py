@@ -240,20 +240,30 @@ def state_from_dict(data: object) -> WorkspaceState:
     )
 
 
-def save_workspace(path: Path, state: WorkspaceState) -> Path:
+def save_workspace(
+    path: Path,
+    state: WorkspaceState,
+    *,
+    save_kind: str = "manual",
+) -> Path:
     path = Path(path).expanduser()
     if path.suffix.lower() not in (".donatello", ".json"):
         path = path.with_suffix(".donatello")
     path.parent.mkdir(parents=True, exist_ok=True)
     payload = state_to_dict(state)
+    kind = (save_kind or "manual").strip().lower() or "manual"
+    payload["save_kind"] = kind
+    if kind == "autosave":
+        payload["save_label"] = "Autosave"
     try:
         path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
     except OSError as exc:
         logger.exception("Failed to write workspace %s", path)
         raise WorkspaceError(f"Could not write workspace: {exc}") from exc
     logger.info(
-        "Saved workspace %s (%d media, active=%s)",
+        "Saved workspace %s kind=%s (%d media, active=%s)",
         path,
+        kind,
         len(state.media),
         state.active.name if state.active else None,
     )

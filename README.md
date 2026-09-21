@@ -27,9 +27,10 @@ Premiere-inspired timeline editor for **MKV only** — cut, assemble, and export
 - **Split markers** — **Add split** (blue); title = output filename for Export multiple
 - **Multi-lane timeline** — one row per video / audio / subtitle with playhead, In/Out, and markers; click a lane or marker to seek; Sel / Edit on the lane; audio volume (0%–200%) in Edit; **‹ M** / **M ›** jump between markers; drag segments to reorder after Razor/Delete
 - **Workspace save / open** — `.donatello` restores the bin, active clip, marks, playhead, selection, track edits, markers, audio volumes, and timeline sequence; warns on close / Open Workspace if unsaved (`•` in the title when dirty)
+- **Autosave** — separate recovery slot (does not overwrite manual Save); interval in Settings (default 60s); File → Restore Autosave…; prompt after an unclean quit
 - **Export (single MKV)** — remux with track metadata and chapters; prefers stream copy when possible; bakes pending timeline edits
 - **Export multiple…** — write several MKVs from split markers (In/Out as outer bounds when set); optional warn before discarding media before the first split
-- **Settings** — default workspace and export folders; Export-multiple discard warn; open the diagnostic log
+- **Settings** — default workspace and export folders; autosave interval; Export-multiple discard warn; open the diagnostic log
 - Dark CustomTkinter chrome with a themed menu bar and themed dialogs
 - Softsubs stay lined up through cuts and inserts
 - Audio channel layouts preserved on Export: **stereo · 2.1 · 5.1 · 7.1**

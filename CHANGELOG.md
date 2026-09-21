@@ -33,6 +33,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Split markers** + **Add split** (blue on the strip); chapter markers stay gold
 - **Export multiple…** — File menu; folder of MKVs from split markers; Mark In/Out as outer bounds first; discard-before-first warn (Settings → Folders, default on); chapters inside each range remapped to 0
 - **Warn on unsaved workspace** — Save / Don't save / Cancel when closing or opening another workspace; title shows `•` when dirty (playhead scrub alone does not dirty)
+- **Autosave** — separate recovery slot under app data (never overwrites manual Save); interval when dirty (Settings → Folders, default 60s, 0 = off); File → Restore Autosave…; offer restore after an unclean quit
 - Themed top menu bar (File / Edit / Help); themed About dialog; themed info / warning / error / string-prompt / yes-no dialogs
 - Dark hover tooltips on controls; quieter chrome; active clip / workspace name in window title
 

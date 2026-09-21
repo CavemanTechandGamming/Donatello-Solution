@@ -38,6 +38,15 @@ from src.core.undo import (
     copy_edl,
     copy_markers,
 )
+from src.core.autosave import (
+    autosave_exists,
+    autosave_workspace_path,
+    linked_workspace_from_meta,
+    load_autosave_state,
+    mark_clean_quit,
+    should_offer_crash_restore,
+    write_autosave,
+)
 from src.core.workspace import (
     WorkspaceError,
     WorkspaceState,
@@ -149,6 +158,7 @@ class DonatelloApp(ctk.CTk, TkinterDnD.DnDWrapper):
         self._selected_stream_index: int | None = None
         self._workspace_path: Path | None = None
         self._saved_fingerprint: str = ""
+        self._autosave_job: str | None = None
 
         self._preview_image: ctk.CTkImage | None = None
         self._last_pil: Image.Image | None = None
@@ -168,6 +178,8 @@ class DonatelloApp(ctk.CTk, TkinterDnD.DnDWrapper):
         self._wire_drag_and_drop()
         self._show_empty_state()
         self._remember_clean_workspace()
+        self._reschedule_autosave()
+        self.after(250, self._maybe_offer_autosave_restore)
         self._poll_preview()
 
     # ── menu ────────────────────────────────────────────────────────────
@@ -186,6 +198,7 @@ class DonatelloApp(ctk.CTk, TkinterDnD.DnDWrapper):
                 ("Open Workspace", self.open_workspace_dialog),
                 ("Save Workspace", self.save_workspace),
                 ("Save Workspace As", self.save_workspace_as_dialog),
+                ("Restore Autosave…", self.restore_autosave_dialog),
                 ("Export MKV", self.export_dialog),
                 ("Export multiple…", self.export_multiple_dialog),
                 ("---", None),
@@ -767,6 +780,7 @@ class DonatelloApp(ctk.CTk, TkinterDnD.DnDWrapper):
             self._play_btn.configure(text="Play")
         show_settings_dialog(self)
         self._refresh_skip_button_labels()
+        self._reschedule_autosave()
 
     def _refresh_skip_button_labels(self) -> None:
         skip = app_settings.get_preview_skip_seconds()
@@ -869,7 +883,24 @@ class DonatelloApp(ctk.CTk, TkinterDnD.DnDWrapper):
 
     def _write_workspace(self, path: Path, *, quiet: bool = False) -> bool:
         try:
-            written = save_workspace(path, self._capture_workspace_state())
+            resolved = Path(path).expanduser().resolve()
+            auto_slot = autosave_workspace_path().resolve()
+        except OSError:
+            resolved = Path(path).expanduser()
+            auto_slot = autosave_workspace_path()
+        if resolved == auto_slot:
+            dialogs.show_warning(
+                "Manual save",
+                "That path is the Autosave recovery slot.\n\n"
+                "Choose a different file for Save / Save As — "
+                "autosave never replaces your manual workspace.",
+                parent=self,
+            )
+            return False
+        try:
+            written = save_workspace(
+                path, self._capture_workspace_state(), save_kind="manual"
+            )
         except WorkspaceError as exc:
             _show_error("Save failed", str(exc), parent=self, exc=exc)
             return False
@@ -900,7 +931,20 @@ class DonatelloApp(ctk.CTk, TkinterDnD.DnDWrapper):
         )
         if not path_str:
             return
-        self._open_workspace(Path(path_str))
+        chosen = Path(path_str)
+        try:
+            if chosen.expanduser().resolve() == autosave_workspace_path().resolve():
+                dialogs.show_info(
+                    "Open Workspace",
+                    "That file is the Autosave recovery slot.\n\n"
+                    "Use File → Restore Autosave… instead — "
+                    "Open Workspace is for your manual Save files only.",
+                    parent=self,
+                )
+                return
+        except OSError:
+            pass
+        self._open_workspace(chosen)
 
     def _refresh_window_title(self) -> None:
         parts = [f"Donatello Solution {__version__}"]
@@ -960,15 +1004,30 @@ class DonatelloApp(ctk.CTk, TkinterDnD.DnDWrapper):
         self._edits[media_key] = seeded
         return seeded
 
-    def _open_workspace(self, path: Path) -> None:
+    def _open_workspace(self, path: Path, *, from_autosave: bool = False) -> None:
         try:
             state = load_workspace(path)
         except WorkspaceError as exc:
-            _show_error("Open workspace failed", str(exc), parent=self, exc=exc)
+            title = "Restore Autosave failed" if from_autosave else "Open workspace failed"
+            _show_error(title, str(exc), parent=self, exc=exc)
             return
 
         self._reset_workspace_ui()
-        self._workspace_path = path.expanduser()
+        if from_autosave:
+            # Never treat the autosave slot as the manual workspace path.
+            linked = linked_workspace_from_meta()
+            if linked is not None:
+                try:
+                    if linked.is_file():
+                        self._workspace_path = linked
+                    else:
+                        self._workspace_path = None
+                except OSError:
+                    self._workspace_path = None
+            else:
+                self._workspace_path = None
+        else:
+            self._workspace_path = path.expanduser()
         self._edits = {k: dict(v) for k, v in state.track_edits.items()}
         self._markers = {k: list(v) for k, v in state.markers.items()}
         self._audio_volumes = {
@@ -1051,8 +1110,21 @@ class DonatelloApp(ctk.CTk, TkinterDnD.DnDWrapper):
             )
         if notes:
             dialogs.show_warning(
-                "Workspace opened with problems",
+                "Autosave restored with problems" if from_autosave else "Workspace opened with problems",
                 "\n\n".join(notes),
+                parent=self,
+            )
+        elif from_autosave:
+            dest = (
+                f"\n\nManual Save path (unchanged):\n{self._workspace_path}"
+                if self._workspace_path
+                else "\n\nNo linked manual workspace — use Save As to keep this."
+            )
+            dialogs.show_info(
+                "Autosave restored",
+                "Loaded the Autosave recovery slot "
+                "(separate from your manual Save)."
+                + dest,
                 parent=self,
             )
         else:
@@ -1061,7 +1133,12 @@ class DonatelloApp(ctk.CTk, TkinterDnD.DnDWrapper):
                 f"Restored {len(self._items)} media item(s) from:\n{path}",
                 parent=self,
             )
-        self._remember_clean_workspace()
+        if from_autosave:
+            # Force dirty so Save writes the manual file, not the autosave slot.
+            self._saved_fingerprint = "__restored_autosave__"
+            self._refresh_window_title()
+        else:
+            self._remember_clean_workspace()
 
     def export_dialog(self) -> None:
         if self._active_path is None or self._result is None:
@@ -1808,8 +1885,91 @@ class DonatelloApp(ctk.CTk, TkinterDnD.DnDWrapper):
     def _on_close(self) -> None:
         if not self._confirm_leave_if_dirty():
             return
+        try:
+            mark_clean_quit()
+        except Exception:
+            logger.exception("Could not mark clean quit")
+        if self._autosave_job is not None:
+            try:
+                self.after_cancel(self._autosave_job)
+            except Exception:
+                pass
+            self._autosave_job = None
         self._player.close()
         self.destroy()
+
+    def _reschedule_autosave(self) -> None:
+        if self._autosave_job is not None:
+            try:
+                self.after_cancel(self._autosave_job)
+            except Exception:
+                pass
+            self._autosave_job = None
+        interval = app_settings.get_autosave_interval_seconds()
+        if interval <= 0:
+            return
+        self._autosave_job = self.after(interval * 1000, self._autosave_tick)
+
+    def _autosave_tick(self) -> None:
+        self._autosave_job = None
+        try:
+            if self._is_workspace_dirty():
+                write_autosave(
+                    self._capture_workspace_state(),
+                    linked_workspace=self._workspace_path,
+                )
+        except Exception:
+            logger.exception("Autosave failed")
+        self._reschedule_autosave()
+
+    def _maybe_offer_autosave_restore(self) -> None:
+        if not should_offer_crash_restore():
+            return
+        ok = dialogs.ask_yes_no(
+            "Restore Autosave?",
+            "Donatello may have closed unexpectedly.\n\n"
+            "An Autosave recovery slot is available "
+            "(separate from your manual Save).\n\n"
+            "Restore the autosave now?",
+            parent=self,
+            ok_text="Restore Autosave",
+        )
+        if ok:
+            self._restore_autosave()
+
+    def restore_autosave_dialog(self) -> None:
+        if not autosave_exists():
+            dialogs.show_info(
+                "Restore Autosave",
+                "No autosave found yet.\n\n"
+                "Autosave writes a separate recovery file while you work "
+                "(Settings → Folders → interval).",
+                parent=self,
+            )
+            return
+        if not self._confirm_leave_if_dirty():
+            return
+        ok = dialogs.ask_yes_no(
+            "Restore Autosave?",
+            "Load the Autosave recovery slot?\n\n"
+            "This does not overwrite your manual workspace file. "
+            "Use Save / Save As afterward to keep changes.",
+            parent=self,
+            ok_text="Restore Autosave",
+        )
+        if ok:
+            self._restore_autosave()
+
+    def _restore_autosave(self) -> None:
+        """Load autosave state; keep manual workspace path as link only (never the slot)."""
+        try:
+            # Validate file via dedicated loader
+            load_autosave_state()
+        except WorkspaceError as exc:
+            _show_error("Restore Autosave failed", str(exc), parent=self, exc=exc)
+            return
+        path = autosave_workspace_path()
+        self._open_workspace(path, from_autosave=True)
 
     def _ensure_edits(self, result: ProbeResult) -> dict[int, TrackEditState]:
         key = _path_key(result.path)

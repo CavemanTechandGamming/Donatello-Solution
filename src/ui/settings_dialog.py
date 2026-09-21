@@ -20,8 +20,8 @@ class SettingsDialog(ctk.CTkToplevel):
     def __init__(self, master) -> None:
         super().__init__(master)
         self.title("Settings — Donatello Solution")
-        self.geometry("640x420")
-        self.minsize(560, 380)
+        self.geometry("640x480")
+        self.minsize(560, 420)
         self.resizable(True, True)
 
         self.transient(master)
@@ -92,6 +92,29 @@ class SettingsDialog(ctk.CTkToplevel):
             text="Warn before Export multiple discards media before the first split",
             variable=self._warn_multi_var,
         ).grid(row=3, column=0, columnspan=3, sticky="w", padx=8, pady=(12, 8))
+
+        ctk.CTkLabel(
+            tab,
+            text="Autosave writes a separate recovery slot (never your manual Save file).",
+            anchor="w",
+            text_color=("gray40", "gray65"),
+        ).grid(row=4, column=0, columnspan=3, sticky="ew", padx=8, pady=(16, 4))
+
+        ctk.CTkLabel(tab, text="Autosave every", anchor="w", width=120).grid(
+            row=5, column=0, sticky="w", padx=(8, 8), pady=8
+        )
+        self._autosave_var = ctk.StringVar(
+            value=str(app_settings.get_autosave_interval_seconds())
+        )
+        ctk.CTkEntry(tab, textvariable=self._autosave_var, width=100).grid(
+            row=5, column=1, sticky="w", padx=4, pady=8
+        )
+        ctk.CTkLabel(
+            tab,
+            text="seconds (0 = off; default 60)",
+            text_color=("gray40", "gray60"),
+            anchor="w",
+        ).grid(row=5, column=2, sticky="w", padx=(4, 8))
 
     def _build_preview_tab(self, tab) -> None:
         tab.grid_columnconfigure(1, weight=1)
@@ -232,6 +255,7 @@ class SettingsDialog(ctk.CTkToplevel):
             app_settings.set_preview_skip_seconds(raw)
             app_settings.set_preview_sample_rate(self._rate_var.get().strip())
             app_settings.set_preview_downmix(self._downmix_var.get().strip())
+            app_settings.set_autosave_interval_seconds(self._autosave_var.get().strip())
         except ValueError as exc:
             dialogs.show_error("Invalid setting", str(exc), parent=self)
             return
@@ -243,12 +267,13 @@ class SettingsDialog(ctk.CTkToplevel):
             bool(self._warn_multi_var.get())
         )
         logger.info(
-            "Settings saved: device=%s rate=%s downmix=%s skip=%s warn_multi=%s",
+            "Settings saved: device=%s rate=%s downmix=%s skip=%s warn_multi=%s autosave=%s",
             chosen or app_settings.DEFAULT_AUDIO_LABEL,
             self._rate_var.get(),
             self._downmix_var.get(),
             raw,
             self._warn_multi_var.get(),
+            self._autosave_var.get(),
         )
         self.grab_release()
         self.destroy()

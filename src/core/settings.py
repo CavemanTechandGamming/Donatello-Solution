@@ -140,6 +140,41 @@ def set_warn_export_multiple_discard_before_first(enabled: bool) -> bool:
     return bool(enabled)
 
 
+DEFAULT_AUTOSAVE_INTERVAL_SECONDS = 60
+MIN_AUTOSAVE_INTERVAL_SECONDS = 0  # 0 = off
+MAX_AUTOSAVE_INTERVAL_SECONDS = 600
+
+
+def get_autosave_interval_seconds() -> int:
+    """Seconds between autosaves when dirty. 0 disables autosave."""
+    raw = load_settings().get(
+        "autosave_interval_seconds", DEFAULT_AUTOSAVE_INTERVAL_SECONDS
+    )
+    try:
+        value = int(raw)
+    except (TypeError, ValueError):
+        return DEFAULT_AUTOSAVE_INTERVAL_SECONDS
+    if value < MIN_AUTOSAVE_INTERVAL_SECONDS:
+        return MIN_AUTOSAVE_INTERVAL_SECONDS
+    if value > MAX_AUTOSAVE_INTERVAL_SECONDS:
+        return MAX_AUTOSAVE_INTERVAL_SECONDS
+    return value
+
+
+def set_autosave_interval_seconds(seconds: int | str) -> int:
+    value = int(seconds)
+    if value < MIN_AUTOSAVE_INTERVAL_SECONDS:
+        raise ValueError("Autosave interval must be 0 or greater (0 = off)")
+    if value > MAX_AUTOSAVE_INTERVAL_SECONDS:
+        raise ValueError(
+            f"Autosave interval must be at most {MAX_AUTOSAVE_INTERVAL_SECONDS} seconds"
+        )
+    settings = load_settings()
+    settings["autosave_interval_seconds"] = value
+    save_settings(settings)
+    return value
+
+
 def import_dialog_initialdir() -> str | None:
     path = get_last_import_dir() or get_default_workspace_dir()
     return str(path) if path else None
