@@ -35,6 +35,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Warn on unsaved workspace** — Save / Don't save / Cancel when closing or opening another workspace; title shows `•` when dirty (playhead scrub alone does not dirty)
 - **Autosave** — separate recovery slot under app data (never overwrites manual Save); interval when dirty (Settings → Folders, default 60s, 0 = off); File → Restore Autosave…; offer restore after an unclean quit
 - **Tools menu** — Mark In / Out; named chapter droppers **Prelog / Intro / Episode / Credits / Epilog** at the playhead; accelerators `1`–`5`, `[`, `]`
+- **Progress UI + cancel** — themed dialog during Export, Export multiple, Delete selected, and Insert selected; Cancel aborts FFmpeg and cleans partial outputs (workspace unchanged); stage-based bar (work steps, not FFmpeg timestamps)
+- Preview arrow keys — ← / → ±1 frame; ↑ / ↓ ±skip seconds (Settings); ignored while typing
 - Native system menu bar (File / Edit / Tools / Help); themed About dialog; themed info / warning / error / string-prompt / yes-no dialogs
 - Dark hover tooltips on controls; quieter chrome; active clip / workspace name in window title
 

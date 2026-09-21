@@ -2,12 +2,13 @@
 
 from __future__ import annotations
 
-import subprocess
 import tempfile
 from dataclasses import dataclass
 from pathlib import Path
 
 from src.core.ffmpeg_paths import FFmpegBootstrapError, ffmpeg_binary
+from src.core.ffmpeg_run import FFmpegRunError, run_ffmpeg
+from src.core.job_progress import JobProgress
 from src.core.logging_setup import get_logger
 from src.core.markers import (
     MARKER_KIND_CHAPTER,
@@ -152,31 +153,22 @@ def _ffmpeg() -> str:
         raise ExportError(str(exc)) from exc
 
 
-def _run_ffmpeg(cmd: list[str], *, label: str) -> None:
-    logger.debug("ffmpeg %s: %s", label, " ".join(cmd))
+def _run_ffmpeg(
+    cmd: list[str],
+    *,
+    label: str,
+    progress: JobProgress | None = None,
+    duration_hint: float | None = None,
+) -> None:
     try:
-        completed = subprocess.run(
+        run_ffmpeg(
             cmd,
-            capture_output=True,
-            text=True,
-            encoding="utf-8",
-            errors="replace",
-            check=False,
+            label=label,
+            progress=progress,
+            duration_hint=duration_hint,
         )
-    except OSError as exc:
-        logger.exception("Failed to run ffmpeg (%s)", label)
-        raise ExportError(f"Failed to run ffmpeg ({label}): {exc}") from exc
-    if completed.returncode != 0:
-        detail = (completed.stderr or completed.stdout or "").strip()
-        logger.error(
-            "FFmpeg %s failed (exit %s)\n%s",
-            label,
-            completed.returncode,
-            detail[-4000:] if detail else "(no output)",
-        )
-        lines = [ln for ln in detail.splitlines() if ln.strip()]
-        useful = "\n".join(lines[-6:]) if lines else f"exit {completed.returncode}"
-        raise ExportError(f"FFmpeg {label} failed:\n{useful}")
+    except FFmpegRunError as exc:
+        raise ExportError(str(exc)) from exc
 
 
 def _extract_copy_segment(
@@ -185,6 +177,7 @@ def _extract_copy_segment(
     *,
     start: float,
     duration: float,
+    progress: JobProgress | None = None,
 ) -> None:
     """Stream-copy [start, start+duration) from *source* into *dest*."""
     ff = _ffmpeg()
@@ -192,7 +185,12 @@ def _extract_copy_segment(
     if start > 0.02:
         cmd.extend(["-ss", f"{start:.3f}"])
     cmd.extend(["-t", f"{duration:.3f}", "-map", "0", "-c", "copy", str(dest)])
-    _run_ffmpeg(cmd, label="export trim")
+    _run_ffmpeg(
+        cmd,
+        label="export trim",
+        progress=progress,
+        duration_hint=duration,
+    )
 
 
 def markers_for_export_range(
@@ -227,6 +225,7 @@ def export_with_track_metadata(
     duration: float | None = None,
     range_start: float | None = None,
     range_end: float | None = None,
+    progress: JobProgress | None = None,
 ) -> None:
     """
     Remux *source* to *output* with track metadata applied (stream copy).
@@ -247,6 +246,8 @@ def export_with_track_metadata(
         raise ExportError("Export path must be different from the source file.")
 
     output.parent.mkdir(parents=True, exist_ok=True)
+    if progress is not None:
+        progress.check()
 
     src_duration = float(duration) if duration is not None else 0.0
     trim = range_start is not None or range_end is not None
@@ -262,7 +263,7 @@ def export_with_track_metadata(
         if end <= start:
             raise ExportError("Mark Out must be after Mark In for ranged Export.")
         span = end - start
-        chapter_markers = markers_for_export_range(
+        chapter_list = markers_for_export_range(
             list(markers or []), start=start, end=end
         )
         out_duration = span
@@ -274,25 +275,40 @@ def export_with_track_metadata(
             source.name,
             output,
         )
+        if progress is not None:
+            progress.begin_stage("Trimming…", 0.0, 0.45)
         with tempfile.TemporaryDirectory(prefix="donatello-export-") as tmp:
             interim = Path(tmp) / "range.mkv"
-            _extract_copy_segment(source, interim, start=start, duration=span)
+            _extract_copy_segment(
+                source, interim, start=start, duration=span, progress=progress
+            )
+            if progress is not None:
+                progress.end_stage()
+                progress.begin_stage("Exporting…", 0.45, 1.0)
             _remux_with_metadata(
                 interim,
                 output,
                 edits,
-                markers=chapter_markers,
+                markers=chapter_list,
                 duration=out_duration,
+                progress=progress,
             )
+            if progress is not None:
+                progress.end_stage()
         return
 
+    if progress is not None:
+        progress.begin_stage("Exporting…", 0.0, 1.0)
     _remux_with_metadata(
         source,
         output,
         edits,
         markers=chapter_markers(list(markers or [])),
         duration=src_duration if src_duration > 0 else None,
+        progress=progress,
     )
+    if progress is not None:
+        progress.end_stage()
 
 
 def _remux_with_metadata(
@@ -302,9 +318,10 @@ def _remux_with_metadata(
     *,
     markers: list[TimelineMarker],
     duration: float | None,
+    progress: JobProgress | None = None,
 ) -> None:
-    chapter_markers = list(markers)
-    use_chapters = bool(chapter_markers)
+    chapter_list = list(markers)
+    use_chapters = bool(chapter_list)
 
     def _run(chapters_file: Path | None) -> None:
         cmd = build_metadata_remux_command(
@@ -315,10 +332,15 @@ def _remux_with_metadata(
             source.name,
             output,
             len(edits),
-            len(chapter_markers) if chapters_file else 0,
+            len(chapter_list) if chapters_file else 0,
         )
         logger.debug("ffmpeg export: %s", " ".join(cmd))
-        _run_ffmpeg(cmd, label="export remux")
+        _run_ffmpeg(
+            cmd,
+            label="export remux",
+            progress=progress,
+            duration_hint=duration,
+        )
         logger.info("Export complete: %s", output)
 
     if not use_chapters:
@@ -326,13 +348,13 @@ def _remux_with_metadata(
         return
 
     dur = float(duration) if duration is not None else 0.0
-    if dur <= 0 and chapter_markers:
-        dur = max(m.time for m in chapter_markers) + 1.0
+    if dur <= 0 and chapter_list:
+        dur = max(m.time for m in chapter_list) + 1.0
 
     with tempfile.TemporaryDirectory(prefix="donatello-chapters-") as tmp:
         meta_path = Path(tmp) / "chapters.ffmeta"
         meta_path.write_text(
-            build_chapters_ffmetadata(chapter_markers, dur),
+            build_chapters_ffmetadata(chapter_list, dur),
             encoding="utf-8",
         )
         _run(meta_path)

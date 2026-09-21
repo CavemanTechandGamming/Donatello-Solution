@@ -21,6 +21,7 @@ from src.core.export_metadata import (
     edits_from_tracks,
     export_with_track_metadata,
 )
+from src.core.ffmpeg_run import safe_unlink
 from src.core.logging_setup import get_logger, log_path
 from src.core.markers import (
     MARKER_KIND_CHAPTER,
@@ -58,6 +59,7 @@ from src.ui.about_dialog import open_about
 from src.ui import dialogs
 from src.ui.markers_dialog import open_markers_dialog
 from src.ui.menubar import NativeMenuBar
+from src.ui.progress_dialog import run_with_progress
 from src.ui.settings_dialog import open_settings as show_settings_dialog
 from src.ui.timeline_lanes import LaneTrack, TimelineLanes
 from src.ui.tooltip import tip
@@ -258,6 +260,10 @@ class DonatelloApp(ctk.CTk, TkinterDnD.DnDWrapper):
             self.bind_all(f"<KP_{digit}>", handler)
         self.bind_all("<bracketleft>", self._hotkey(self._mark_in_here))
         self.bind_all("<bracketright>", self._hotkey(self._mark_out_here))
+        self.bind_all("<Left>", self._hotkey(lambda: self._step_frames(-1)))
+        self.bind_all("<Right>", self._hotkey(lambda: self._step_frames(1)))
+        self.bind_all("<Up>", self._hotkey(lambda: self._step_seconds(1)))
+        self.bind_all("<Down>", self._hotkey(lambda: self._step_seconds(-1)))
 
     def _focus_is_typing(self) -> bool:
         """True when a text field has focus — bare hotkeys must not fire."""
@@ -372,7 +378,7 @@ class DonatelloApp(ctk.CTk, TkinterDnD.DnDWrapper):
             transport, text="‹ 1f", width=52, command=lambda: self._step_frames(-1)
         )
         self._btn_frame_back.pack(side="left", padx=2)
-        tip(self._btn_frame_back, "Previous frame", "Step one frame backward.")
+        tip(self._btn_frame_back, "Previous frame", "Step one frame backward.\nShortcut: ←")
 
         self._play_btn = ctk.CTkButton(
             transport, text="Play", width=70, command=self._toggle_play
@@ -390,7 +396,7 @@ class DonatelloApp(ctk.CTk, TkinterDnD.DnDWrapper):
             transport, text="1f ›", width=52, command=lambda: self._step_frames(1)
         )
         self._btn_frame_fwd.pack(side="left", padx=2)
-        tip(self._btn_frame_fwd, "Next frame", "Step one frame forward.")
+        tip(self._btn_frame_fwd, "Next frame", "Step one frame forward.\nShortcut: →")
 
         self._btn_skip_fwd = ctk.CTkButton(
             transport, text="5s >>", width=64, command=lambda: self._step_seconds(1)
@@ -835,10 +841,10 @@ class DonatelloApp(ctk.CTk, TkinterDnD.DnDWrapper):
             self._btn_skip_fwd.configure(text=f"{label} >>")
         if hasattr(self, "_tip_skip_back"):
             self._tip_skip_back.set_text(
-                f"Skip back\nJump backward by {label} (Settings)."
+                f"Skip back\nJump backward by {label} (Settings).\nShortcut: ↓"
             )
             self._tip_skip_fwd.set_text(
-                f"Skip forward\nJump forward by {label} (Settings)."
+                f"Skip forward\nJump forward by {label} (Settings).\nShortcut: ↑"
             )
 
     def save_workspace(self) -> None:
@@ -1265,41 +1271,49 @@ class DonatelloApp(ctk.CTk, TkinterDnD.DnDWrapper):
 
         flat_path: Path | None = None
         export_source = Path(self._active_path)
-        try:
+        tmp_out: Path | None = None
+        wrote_direct = False
+
+        def _job(prog) -> bool:
+            nonlocal flat_path, export_source, duration, tmp_out, wrote_direct
             if needs_flatten:
                 if edl is None or not edl.segments:
-                    dialogs.show_warning(
-                        "Export",
-                        "Timeline edit decision is empty — nothing to export.",
-                        parent=self,
+                    raise ExportError(
+                        "Timeline edit decision is empty — nothing to export."
                     )
-                    return
                 flat_path = _work_dir() / (
                     f"{self._active_path.stem}_flat_{int(duration * 1000)}.mkv"
                 )
-                logger.info("Flattening EDL (%d segments) → %s", len(edl.segments), flat_path)
-                flatten_edit_decision(edl, flat_path, edits=edits)
+                logger.info(
+                    "Flattening EDL (%d segments) → %s", len(edl.segments), flat_path
+                )
+                prog.begin_stage("Flattening timeline…", 0.0, 0.55)
+                flatten_edit_decision(edl, flat_path, edits=edits, progress=prog)
+                prog.end_stage()
                 export_source = flat_path
-                # Probe flattened duration for metadata
                 try:
                     flat_probe = probe_mkv(flat_path)
                     duration = flat_probe.duration_seconds or duration
                 except ProbeError:
                     pass
+                prog.begin_stage("Exporting…", 0.55, 1.0)
 
             if out.resolve() == Path(self._active_path).resolve():
-                tmp = out.with_suffix(".donatello-export.tmp.mkv")
+                tmp_out = out.with_suffix(".donatello-export.tmp.mkv")
                 export_with_track_metadata(
                     export_source,
-                    tmp,
+                    tmp_out,
                     edits,
                     markers=chapter_markers_list,
                     duration=duration,
                     range_start=range_start,
                     range_end=range_end,
+                    progress=prog,
                 )
-                tmp.replace(out)
+                tmp_out.replace(out)
+                tmp_out = None
             else:
+                wrote_direct = True
                 export_with_track_metadata(
                     export_source,
                     out,
@@ -1308,11 +1322,35 @@ class DonatelloApp(ctk.CTk, TkinterDnD.DnDWrapper):
                     duration=duration,
                     range_start=range_start,
                     range_end=range_end,
+                    progress=prog,
                 )
+            if needs_flatten:
+                prog.end_stage()
+            prog.complete()
+            return True
+
+        try:
+            outcome = run_with_progress(self, "Exporting…", _job)
+            if outcome.cancelled:
+                safe_unlink(flat_path, tmp_out)
+                if wrote_direct:
+                    safe_unlink(out)
+                dialogs.show_info(
+                    "Export cancelled",
+                    "Export was cancelled. The workspace was not changed.",
+                    parent=self,
+                )
+                return
         except (ExportError, CutError) as exc:
+            safe_unlink(flat_path, tmp_out)
+            if wrote_direct:
+                safe_unlink(out)
             _show_error("Export failed", str(exc), parent=self, exc=exc)
             return
         except OSError as exc:
+            safe_unlink(flat_path, tmp_out)
+            if wrote_direct:
+                safe_unlink(out)
             _show_error("Export failed", str(exc), parent=self, exc=exc)
             return
 
@@ -1459,55 +1497,65 @@ class DonatelloApp(ctk.CTk, TkinterDnD.DnDWrapper):
         flat_path: Path | None = None
         export_source = Path(self._active_path)
         written: list[Path] = []
+        # Mutable bag so the worker can update segments after flatten
+        bag: dict = {
+            "segments": segments,
+            "duration": duration,
+            "export_source": export_source,
+            "flat_path": None,
+            "written": written,
+        }
 
-        try:
+        def _job(prog) -> list[Path]:
+            segs = bag["segments"]
+            dur = bag["duration"]
+            src = bag["export_source"]
+            flat_share = 0.35 if needs_flatten else 0.0
             if needs_flatten:
                 if edl is None or not edl.segments:
-                    dialogs.show_warning(
-                        "Export multiple",
-                        "Timeline edit decision is empty — nothing to export.",
-                        parent=self,
+                    raise ExportError(
+                        "Timeline edit decision is empty — nothing to export."
                     )
-                    return
-                flat_path = _work_dir() / (
-                    f"{self._active_path.stem}_flat_{int(duration * 1000)}.mkv"
+                fp = _work_dir() / (
+                    f"{self._active_path.stem}_flat_{int(dur * 1000)}.mkv"
                 )
+                bag["flat_path"] = fp
                 logger.info(
                     "Flattening EDL for Export multiple (%d segments) → %s",
                     len(edl.segments),
-                    flat_path,
+                    fp,
                 )
-                flatten_edit_decision(edl, flat_path, edits=edits)
-                export_source = flat_path
+                prog.begin_stage("Flattening timeline…", 0.0, flat_share)
+                flatten_edit_decision(edl, fp, edits=edits, progress=prog)
+                prog.end_stage()
+                src = fp
+                bag["export_source"] = src
                 try:
-                    flat_probe = probe_mkv(flat_path)
-                    duration = flat_probe.duration_seconds or duration
+                    flat_probe = probe_mkv(fp)
+                    dur = flat_probe.duration_seconds or dur
+                    bag["duration"] = dur
                 except ProbeError:
                     pass
-                # Rebuild segments against flattened duration
-                segments = build_export_multiple_segments(
+                segs = build_export_multiple_segments(
                     all_markers,
-                    duration=duration,
+                    duration=dur,
                     mark_in=self._mark_in,
                     mark_out=self._mark_out,
                 )
-                if not segments:
-                    dialogs.show_warning(
-                        "Export multiple",
-                        "No exportable ranges after flattening.",
-                        parent=self,
-                    )
-                    return
+                bag["segments"] = segs
+                if not segs:
+                    raise ExportError("No exportable ranges after flattening.")
 
             logger.info(
                 "Export multiple: %d file(s) from %s → %s",
-                len(segments),
+                len(segs),
                 self._active_path.name,
                 out_dir,
             )
-            for seg in segments:
+            total = len(segs)
+            for i, seg in enumerate(segs):
+                prog.check()
                 out = out_dir / f"{seg.stem}.mkv"
-                # Avoid clobbering if stem uniqueness failed vs existing files
                 if out.exists():
                     n = 2
                     while True:
@@ -1516,20 +1564,42 @@ class DonatelloApp(ctk.CTk, TkinterDnD.DnDWrapper):
                             out = candidate
                             break
                         n += 1
+                lo = flat_share + (1.0 - flat_share) * (i / max(1, total))
+                hi = flat_share + (1.0 - flat_share) * ((i + 1) / max(1, total))
+                prog.begin_stage(f"Exporting {i + 1} of {total}…", lo, hi)
                 export_with_track_metadata(
-                    export_source,
+                    src,
                     out,
                     edits,
                     markers=all_markers,
-                    duration=duration,
+                    duration=dur,
                     range_start=seg.start,
                     range_end=seg.end,
+                    progress=prog,
                 )
+                prog.end_stage()
                 written.append(out)
+            prog.complete()
+            return written
+
+        try:
+            outcome = run_with_progress(self, "Export multiple…", _job)
+            if outcome.cancelled:
+                safe_unlink(bag.get("flat_path"), *written)
+                dialogs.show_info(
+                    "Export multiple cancelled",
+                    "Export was cancelled. Partial output files were removed.\n"
+                    "The workspace was not changed.",
+                    parent=self,
+                )
+                return
+            written = list(outcome.value or [])
         except (ExportError, CutError) as exc:
+            safe_unlink(bag.get("flat_path"), *written)
             _show_error("Export multiple failed", str(exc), parent=self, exc=exc)
             return
         except OSError as exc:
+            safe_unlink(bag.get("flat_path"), *written)
             _show_error("Export multiple failed", str(exc), parent=self, exc=exc)
             return
 
@@ -2626,16 +2696,30 @@ class DonatelloApp(ctk.CTk, TkinterDnD.DnDWrapper):
             out_path.name,
         )
         try:
-            perform_cut(
-                self._active_path,
-                out_path,
-                cut,
-                duration=self._result.duration_seconds,
-                edits=edits,
-                selected_track=selected,
-                audio_tracks=audio_tracks,
+            outcome = run_with_progress(
+                self,
+                "Delete selected…",
+                lambda prog: perform_cut(
+                    self._active_path,
+                    out_path,
+                    cut,
+                    duration=self._result.duration_seconds,
+                    edits=edits,
+                    selected_track=selected,
+                    audio_tracks=audio_tracks,
+                    progress=prog,
+                ),
             )
+            if outcome.cancelled:
+                safe_unlink(out_path)
+                dialogs.show_info(
+                    "Delete cancelled",
+                    "Delete selected was cancelled. The workspace was not changed.",
+                    parent=self,
+                )
+                return
         except CutError as exc:
+            safe_unlink(out_path)
             _show_error("Delete failed", str(exc), parent=self, exc=exc)
             return
 
@@ -2817,18 +2901,32 @@ class DonatelloApp(ctk.CTk, TkinterDnD.DnDWrapper):
             out_path.name,
         )
         try:
-            perform_insert(
-                self._active_path,
-                insert_path,
-                out_path,
-                at=at,
-                base_duration=self._result.duration_seconds,
-                edits=edits,
-                selected_base_track=selected_base,
-                selected_insert_track=selected_ins,
-                base_audio_tracks=audio_tracks,
+            outcome = run_with_progress(
+                self,
+                "Insert selected…",
+                lambda prog: perform_insert(
+                    self._active_path,
+                    insert_path,
+                    out_path,
+                    at=at,
+                    base_duration=self._result.duration_seconds,
+                    edits=edits,
+                    selected_base_track=selected_base,
+                    selected_insert_track=selected_ins,
+                    base_audio_tracks=audio_tracks,
+                    progress=prog,
+                ),
             )
+            if outcome.cancelled:
+                safe_unlink(out_path)
+                dialogs.show_info(
+                    "Insert cancelled",
+                    "Insert selected was cancelled. The workspace was not changed.",
+                    parent=self,
+                )
+                return
         except CutError as exc:
+            safe_unlink(out_path)
             _show_error("Insert failed", str(exc), parent=self, exc=exc)
             return
 

@@ -19,6 +19,7 @@ from src.core.cut import (
     _run,
 )
 from src.core.export_metadata import TrackEditState
+from src.core.job_progress import JobProgress
 from src.core.logging_setup import get_logger
 from src.core.probe import MediaTrack
 
@@ -33,6 +34,7 @@ def insert_all_streams(
     at: float,
     base_duration: float | None = None,
     edits: list[TrackEditState] | None = None,
+    progress: JobProgress | None = None,
 ) -> None:
     """
     Splice *insert* into *base* at *at* seconds (all streams, stream-copy).
@@ -64,29 +66,81 @@ def insert_all_streams(
         point,
         output,
     )
+    if progress is not None:
+        progress.status("Inserting…", None)
 
     with tempfile.TemporaryDirectory(prefix="donatello-ins-") as tmp:
         tmp_path = Path(tmp)
         parts: list[Path] = []
+        planned = (
+            (1 if point > 0.02 else 0)
+            + 1
+            + (1 if (base_duration is None or point < (base_duration - 0.02)) else 0)
+            + 2
+        )
+        step = 0
 
         if point > 0.02:
+            if progress is not None:
+                progress.begin_stage(
+                    "Inserting… (head)", step / planned, (step + 1) / planned
+                )
             head = tmp_path / "head.mkv"
-            _extract_segment(ff, base, head, duration=point, label="insert head")
+            _extract_segment(
+                ff,
+                base,
+                head,
+                duration=point,
+                label="insert head",
+                progress=progress,
+            )
             parts.append(head)
+            if progress is not None:
+                progress.end_stage()
+            step += 1
 
+        if progress is not None:
+            progress.begin_stage(
+                "Inserting… (clip)", step / planned, (step + 1) / planned
+            )
         mid = tmp_path / "mid.mkv"
-        _extract_segment(ff, insert, mid, label="insert clip")
+        _extract_segment(ff, insert, mid, label="insert clip", progress=progress)
         parts.append(mid)
+        if progress is not None:
+            progress.end_stage()
+        step += 1
 
         keep_tail = base_duration is None or point < (base_duration - 0.02)
         if keep_tail:
+            if progress is not None:
+                progress.begin_stage(
+                    "Inserting… (tail)", step / planned, (step + 1) / planned
+                )
             tail = tmp_path / "tail.mkv"
-            _extract_segment(ff, base, tail, start=point, label="insert tail")
+            _extract_segment(
+                ff,
+                base,
+                tail,
+                start=point,
+                label="insert tail",
+                progress=progress,
+            )
             parts.append(tail)
+            if progress is not None:
+                progress.end_stage()
+            step += 1
 
+        if progress is not None:
+            progress.begin_stage("Joining…", step / planned, (step + 1) / planned)
         interim = tmp_path / "joined.mkv"
-        _concat_copy(ff, parts, interim)
-        _finalize(interim, output, edits)
+        _concat_copy(ff, parts, interim, progress=progress)
+        if progress is not None:
+            progress.end_stage()
+            step += 1
+            progress.begin_stage("Finishing…", step / planned, 1.0)
+        _finalize(interim, output, edits, progress=progress)
+        if progress is not None:
+            progress.end_stage()
 
 
 def insert_single_video(
@@ -99,12 +153,14 @@ def insert_single_video(
     insert_track: MediaTrack,
     base_duration: float | None = None,
     edits: list[TrackEditState] | None = None,
+    progress: JobProgress | None = None,
 ) -> None:
     """
     Insert *insert*'s video into *base*'s video at *at*; copy base audio/subs.
 
     Intentional desync: audio/sub lengths stay as base-only.
     """
+    del base_duration  # unused; kept for API symmetry with insert_all_streams
     if base_track.kind != "video" or insert_track.kind != "video":
         raise CutError("Single-stream video insert needs a video track on both clips.")
 
@@ -115,8 +171,6 @@ def insert_single_video(
     ff = _ffmpeg()
 
     bv, iv = base_track.type_index, insert_track.type_index
-    # base[0:at] + insert + base[at:]
-    # Use three inputs: 0=base, 1=insert
     point = max(0.0, at)
 
     fc = (
@@ -125,6 +179,8 @@ def insert_single_video(
         f"[0:v:{bv}]trim=start={point:.3f},setpts=PTS-STARTPTS[v2];"
         f"[v0][v1][v2]concat=n=3:v=1:a=0[vout]"
     )
+    if progress is not None:
+        progress.begin_stage("Inserting video…", 0.0, 0.85)
 
     with tempfile.TemporaryDirectory(prefix="donatello-insv-") as tmp:
         interim = Path(tmp) / "single.mkv"
@@ -158,8 +214,14 @@ def insert_single_video(
                 str(interim),
             ],
             label="insert video",
+            progress=progress,
         )
-        _finalize(interim, output, edits)
+        if progress is not None:
+            progress.end_stage()
+            progress.begin_stage("Finishing…", 0.85, 1.0)
+        _finalize(interim, output, edits, progress=progress)
+        if progress is not None:
+            progress.end_stage()
 
 
 def insert_single_audio(
@@ -172,6 +234,7 @@ def insert_single_audio(
     insert_track: MediaTrack,
     base_audio_tracks: list[MediaTrack],
     edits: list[TrackEditState] | None = None,
+    progress: JobProgress | None = None,
 ) -> None:
     """Insert insert's audio into one base audio track at *at*; copy video/other audio/subs."""
     if base_track.kind != "audio" or insert_track.kind != "audio":
@@ -191,6 +254,8 @@ def insert_single_audio(
         f"[0:a:{ba}]atrim=start={point:.3f},asetpts=PTS-STARTPTS[a2];"
         f"[a0][a1][a2]concat=n=3:v=0:a=1[aout]"
     )
+    if progress is not None:
+        progress.begin_stage("Inserting audio…", 0.0, 0.85)
 
     with tempfile.TemporaryDirectory(prefix="donatello-insa-") as tmp:
         interim = Path(tmp) / "single.mkv"
@@ -215,8 +280,13 @@ def insert_single_audio(
         cmd.extend(
             ["-map", "0:s?", "-c:v", "copy", "-c:a", "ac3", "-c:s", "copy", str(interim)]
         )
-        _run(cmd, label="insert audio")
-        _finalize(interim, output, edits)
+        _run(cmd, label="insert audio", progress=progress)
+        if progress is not None:
+            progress.end_stage()
+            progress.begin_stage("Finishing…", 0.85, 1.0)
+        _finalize(interim, output, edits, progress=progress)
+        if progress is not None:
+            progress.end_stage()
 
 
 def perform_insert(
@@ -230,6 +300,7 @@ def perform_insert(
     selected_base_track: MediaTrack | None = None,
     selected_insert_track: MediaTrack | None = None,
     base_audio_tracks: list[MediaTrack] | None = None,
+    progress: JobProgress | None = None,
 ) -> None:
     """Default: all streams. With selected tracks: single-stream video/audio insert."""
     if selected_base_track is None:
@@ -240,6 +311,7 @@ def perform_insert(
             at=at,
             base_duration=base_duration,
             edits=edits,
+            progress=progress,
         )
         return
 
@@ -258,6 +330,7 @@ def perform_insert(
             insert_track=ins,
             base_duration=base_duration,
             edits=edits,
+            progress=progress,
         )
         return
 
@@ -276,6 +349,7 @@ def perform_insert(
             insert_track=ins,
             base_audio_tracks=base_audio_tracks or [selected_base_track],
             edits=edits,
+            progress=progress,
         )
         return
 

@@ -9,13 +9,14 @@ Single-stream (Ctrl): shorten only the selected video/audio track (intentional d
 
 from __future__ import annotations
 
-import subprocess
 import tempfile
 from dataclasses import dataclass
 from pathlib import Path
 
 from src.core.export_metadata import ExportError, TrackEditState, export_with_track_metadata
 from src.core.ffmpeg_paths import FFmpegBootstrapError, ffmpeg_binary
+from src.core.ffmpeg_run import FFmpegRunError, run_ffmpeg
+from src.core.job_progress import JobProgress
 from src.core.logging_setup import get_logger
 from src.core.probe import MediaTrack
 
@@ -45,40 +46,36 @@ def _ffmpeg() -> str:
         raise CutError(str(exc)) from exc
 
 
-def _run(cmd: list[str], *, label: str) -> None:
-    logger.debug("ffmpeg %s: %s", label, " ".join(cmd))
+def _run(
+    cmd: list[str],
+    *,
+    label: str,
+    progress: JobProgress | None = None,
+    duration_hint: float | None = None,
+) -> None:
     try:
-        completed = subprocess.run(
+        run_ffmpeg(
             cmd,
-            capture_output=True,
-            text=True,
-            encoding="utf-8",
-            errors="replace",
-            check=False,
+            label=label,
+            progress=progress,
+            duration_hint=duration_hint,
         )
-    except OSError as exc:
-        logger.exception("Failed to run ffmpeg (%s)", label)
-        raise CutError(f"Failed to run ffmpeg ({label}): {exc}") from exc
-    if completed.returncode != 0:
-        detail = (completed.stderr or completed.stdout or "").strip()
-        logger.error(
-            "FFmpeg %s failed (exit %s)\n%s",
-            label,
-            completed.returncode,
-            detail[-4000:] if detail else "(no output)",
-        )
-        last = detail.splitlines()[-1] if detail else f"exit {completed.returncode}"
-        raise CutError(f"FFmpeg {label} failed: {last}")
+    except FFmpegRunError as exc:
+        raise CutError(str(exc)) from exc
 
 
 def _finalize(
     interim: Path,
     output: Path,
     edits: list[TrackEditState] | None,
+    *,
+    progress: JobProgress | None = None,
 ) -> None:
     if edits:
-        export_with_track_metadata(interim, output, edits)
+        export_with_track_metadata(interim, output, edits, progress=progress)
     else:
+        if progress is not None:
+            progress.check()
         output.write_bytes(interim.read_bytes())
 
 
@@ -90,6 +87,7 @@ def _extract_segment(
     start: float | None = None,
     duration: float | None = None,
     label: str = "segment",
+    progress: JobProgress | None = None,
 ) -> None:
     """Stream-copy a segment. ``start`` uses -ss after -i; ``duration`` uses -t."""
     cmd = [ff, "-hide_banner", "-y", "-i", str(source)]
@@ -98,13 +96,21 @@ def _extract_segment(
     if duration is not None:
         cmd.extend(["-t", f"{duration:.3f}"])
     cmd.extend(["-map", "0", "-c", "copy", str(dest)])
-    _run(cmd, label=label)
+    _run(cmd, label=label, progress=progress, duration_hint=duration)
 
 
-def _concat_copy(ff: str, parts: list[Path], dest: Path) -> None:
+def _concat_copy(
+    ff: str,
+    parts: list[Path],
+    dest: Path,
+    *,
+    progress: JobProgress | None = None,
+) -> None:
     if not parts:
         raise CutError("Nothing to concatenate.")
     if len(parts) == 1:
+        if progress is not None:
+            progress.check()
         dest.write_bytes(parts[0].read_bytes())
         return
     list_file = dest.parent / "concat.txt"
@@ -131,6 +137,7 @@ def _concat_copy(ff: str, parts: list[Path], dest: Path) -> None:
             str(dest),
         ],
         label="concat",
+        progress=progress,
     )
 
 
@@ -141,6 +148,7 @@ def cut_out_all_streams(
     *,
     duration: float | None = None,
     edits: list[TrackEditState] | None = None,
+    progress: JobProgress | None = None,
 ) -> None:
     """Remove [start, end) from every stream together (stream-copy when possible)."""
     source = Path(source).expanduser().resolve()
@@ -162,28 +170,67 @@ def cut_out_all_streams(
     with tempfile.TemporaryDirectory(prefix="donatello-cut-") as tmp:
         tmp_path = Path(tmp)
         parts: list[Path] = []
+        # head? + tail? + concat + finalize
+        planned = (
+            (1 if start > 0.02 else 0)
+            + (1 if (duration is None or end < (duration - 0.02)) else 0)
+            + 2
+        )
+        step = 0
 
         if start > 0.02:
+            if progress is not None:
+                progress.begin_stage(
+                    "Cutting… (head)", step / planned, (step + 1) / planned
+                )
             part1 = tmp_path / "part1.mkv"
             _extract_segment(
-                ff, source, part1, duration=start, label="cut head"
+                ff,
+                source,
+                part1,
+                duration=start,
+                label="cut head",
+                progress=progress,
             )
             parts.append(part1)
+            if progress is not None:
+                progress.end_stage()
+            step += 1
 
         keep_tail = duration is None or end < (duration - 0.02)
         if keep_tail:
+            if progress is not None:
+                progress.begin_stage(
+                    "Cutting… (tail)", step / planned, (step + 1) / planned
+                )
             part2 = tmp_path / "part2.mkv"
             _extract_segment(
-                ff, source, part2, start=end, label="cut tail"
+                ff,
+                source,
+                part2,
+                start=end,
+                label="cut tail",
+                progress=progress,
             )
             parts.append(part2)
+            if progress is not None:
+                progress.end_stage()
+            step += 1
 
         if not parts:
             raise CutError("Cut would remove the entire file.")
 
+        if progress is not None:
+            progress.begin_stage("Joining…", step / planned, (step + 1) / planned)
         interim = tmp_path / "joined.mkv"
-        _concat_copy(ff, parts, interim)
-        _finalize(interim, output, edits)
+        _concat_copy(ff, parts, interim, progress=progress)
+        if progress is not None:
+            progress.end_stage()
+            step += 1
+            progress.begin_stage("Finishing…", step / planned, 1.0)
+        _finalize(interim, output, edits, progress=progress)
+        if progress is not None:
+            progress.end_stage()
 
 
 def cut_out_single_video(
@@ -194,6 +241,7 @@ def cut_out_single_video(
     *,
     duration: float | None = None,
     edits: list[TrackEditState] | None = None,
+    progress: JobProgress | None = None,
 ) -> None:
     """Remove [start, end) from one video track; copy audio + subs (may desync)."""
     source = Path(source).expanduser().resolve()
@@ -213,6 +261,8 @@ def cut_out_single_video(
         f"[0:v:{idx}]trim=start={end:.3f},setpts=PTS-STARTPTS[v1];"
         f"[v0][v1]concat=n=2:v=1:a=0[vout]"
     )
+    if progress is not None:
+        progress.begin_stage("Cutting video…", 0.0, 0.85)
 
     with tempfile.TemporaryDirectory(prefix="donatello-cutv-") as tmp:
         interim = Path(tmp) / "single.mkv"
@@ -244,8 +294,15 @@ def cut_out_single_video(
                 str(interim),
             ],
             label="single video cut",
+            progress=progress,
+            duration_hint=duration,
         )
-        _finalize(interim, output, edits)
+        if progress is not None:
+            progress.end_stage()
+            progress.begin_stage("Finishing…", 0.85, 1.0)
+        _finalize(interim, output, edits, progress=progress)
+        if progress is not None:
+            progress.end_stage()
 
 
 def cut_out_single_audio(
@@ -257,6 +314,7 @@ def cut_out_single_audio(
     *,
     duration: float | None = None,
     edits: list[TrackEditState] | None = None,
+    progress: JobProgress | None = None,
 ) -> None:
     """Remove [start, end) from one audio track; copy video + other audio + subs."""
     source = Path(source).expanduser().resolve()
@@ -276,6 +334,8 @@ def cut_out_single_audio(
         f"[0:a:{idx}]atrim=start={end:.3f},asetpts=PTS-STARTPTS[a1];"
         f"[a0][a1]concat=n=2:v=0:a=1[aout]"
     )
+    if progress is not None:
+        progress.begin_stage("Cutting audio…", 0.0, 0.85)
 
     with tempfile.TemporaryDirectory(prefix="donatello-cuta-") as tmp:
         interim = Path(tmp) / "single.mkv"
@@ -296,8 +356,18 @@ def cut_out_single_audio(
             else:
                 cmd.extend(["-map", f"0:a:{a.type_index}"])
         cmd.extend(["-map", "0:s?", "-c:v", "copy", "-c:a", "ac3", "-c:s", "copy", str(interim)])
-        _run(cmd, label="single audio cut")
-        _finalize(interim, output, edits)
+        _run(
+            cmd,
+            label="single audio cut",
+            progress=progress,
+            duration_hint=duration,
+        )
+        if progress is not None:
+            progress.end_stage()
+            progress.begin_stage("Finishing…", 0.85, 1.0)
+        _finalize(interim, output, edits, progress=progress)
+        if progress is not None:
+            progress.end_stage()
 
 
 def perform_cut(
@@ -309,6 +379,7 @@ def perform_cut(
     edits: list[TrackEditState] | None = None,
     selected_track: MediaTrack | None = None,
     audio_tracks: list[MediaTrack] | None = None,
+    progress: JobProgress | None = None,
 ) -> None:
     """
     Default (selected_track is None): all streams together.
@@ -316,12 +387,23 @@ def perform_cut(
     """
     if selected_track is None:
         cut_out_all_streams(
-            source, output, cut, duration=duration, edits=edits
+            source,
+            output,
+            cut,
+            duration=duration,
+            edits=edits,
+            progress=progress,
         )
         return
     if selected_track.kind == "video":
         cut_out_single_video(
-            source, output, cut, selected_track, duration=duration, edits=edits
+            source,
+            output,
+            cut,
+            selected_track,
+            duration=duration,
+            edits=edits,
+            progress=progress,
         )
         return
     if selected_track.kind == "audio":
@@ -333,6 +415,7 @@ def perform_cut(
             audio_tracks or [selected_track],
             duration=duration,
             edits=edits,
+            progress=progress,
         )
         return
     raise CutError(
@@ -346,6 +429,7 @@ def flatten_edit_decision(
     output: Path,
     *,
     edits: list[TrackEditState] | None = None,
+    progress: JobProgress | None = None,
 ) -> None:
     """Bake an EDL to a single MKV (stream-copy segments + concat)."""
     from src.core.sequence import EditDecision  # local import avoids cycles
@@ -360,11 +444,20 @@ def flatten_edit_decision(
         raise CutError("Flatten output must be an .mkv file.")
     output.parent.mkdir(parents=True, exist_ok=True)
     ff = _ffmpeg()
+    n = len(edl.segments)
+    # One stage per extract + join + finalize so the bar walks even on stream-copy.
+    steps = n + 2
 
     with tempfile.TemporaryDirectory(prefix="donatello-flatten-") as tmp:
         tmp_path = Path(tmp)
         parts: list[Path] = []
         for i, seg in enumerate(edl.segments):
+            if progress is not None:
+                progress.begin_stage(
+                    f"Flattening… ({i + 1}/{n})",
+                    i / steps,
+                    (i + 1) / steps,
+                )
             source = Path(seg.source).expanduser().resolve()
             if not source.is_file():
                 raise CutError(f"Segment source not found: {source}")
@@ -378,9 +471,19 @@ def flatten_edit_decision(
                 start=seg.src_in if seg.src_in > 0.02 else None,
                 duration=seg.duration,
                 label=f"flatten {i}",
+                progress=progress,
             )
             parts.append(part)
+            if progress is not None:
+                progress.end_stage()
 
+        if progress is not None:
+            progress.begin_stage("Joining segments…", n / steps, (n + 1) / steps)
         interim = tmp_path / "joined.mkv"
-        _concat_copy(ff, parts, interim)
-        _finalize(interim, output, edits)
+        _concat_copy(ff, parts, interim, progress=progress)
+        if progress is not None:
+            progress.end_stage()
+            progress.begin_stage("Finishing…", (n + 1) / steps, 1.0)
+        _finalize(interim, output, edits, progress=progress)
+        if progress is not None:
+            progress.end_stage()

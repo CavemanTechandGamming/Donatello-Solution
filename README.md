@@ -14,7 +14,7 @@ Premiere-inspired timeline editor for **MKV only** — cut, assemble, and export
 ## Features
 
 - **Project panel** — import MKVs by browse or drag-and-drop; click to load on the timeline
-- **In-app preview** — Play / Pause / Stop, scrub, ±1 frame, ±skip seconds (PyAV; HEVC 10-bit + AC3 and friends)
+- **In-app preview** — Play / Pause / Stop, scrub, ±1 frame, ±skip seconds (PyAV; HEVC 10-bit + AC3 and friends); arrow keys ←/→ frame, ↑/↓ skip
 - **Preview monitor audio** — Settings for output device, sample rate, and downmix (Stereo / Mono / Keep channels); Export never downmixes
 - **Mark In / Out** — export work area (keep In→Out; drop before In / after Out). Same marks bound **Delete** when removing a span from the timeline
 - **Razor** — split at the playhead (nothing deleted; rearrange segments by drag)
@@ -28,8 +28,8 @@ Premiere-inspired timeline editor for **MKV only** — cut, assemble, and export
 - **Multi-lane timeline** — one row per video / audio / subtitle with playhead, In/Out, and markers; click a lane or marker to seek; Sel / Edit on the lane; audio volume (0%–200%) in Edit; **‹ M** / **M ›** jump between markers; drag segments to reorder after Razor/Delete
 - **Workspace save / open** — `.donatello` restores the bin, active clip, marks, playhead, selection, track edits, markers, audio volumes, and timeline sequence; warns on close / Open Workspace if unsaved (`•` in the title when dirty)
 - **Autosave** — separate recovery slot (does not overwrite manual Save); interval in Settings (default 60s); File → Restore Autosave…; prompt after an unclean quit
-- **Export (single MKV)** — remux with track metadata and chapters; prefers stream copy when possible; bakes pending timeline edits
-- **Export multiple…** — write several MKVs from split markers (In/Out as outer bounds when set); optional warn before discarding media before the first split
+- **Export (single MKV)** — remux with track metadata and chapters; prefers stream copy when possible; bakes pending timeline edits; progress dialog with Cancel
+- **Export multiple…** — write several MKVs from split markers (In/Out as outer bounds when set); optional warn before discarding media before the first split; progress + Cancel
 - **Tools** — Mark In / Out; drop named chapter markers **Prelog / Intro / Episode / Credits / Epilog** at the playhead (`1`–`5`, `[`, `]`)
 - **Settings** — default workspace and export folders; autosave interval; Export-multiple discard warn; open the diagnostic log
 - Dark CustomTkinter chrome with a native system menu bar and themed dialogs
@@ -58,7 +58,7 @@ Until then, run from source (see [CONTRIBUTING.md](CONTRIBUTING.md)).
 ## How to use
 
 1. **Import** MKVs into the Project panel (browse or drag-and-drop), then click a clip to load it on the timeline.
-2. **Preview** with Play / scrub; set **Mark In** and **Mark Out** when you need an export work area.
+2. **Preview** with Play / scrub (←/→ frame, ↑/↓ skip); set **Mark In** and **Mark Out** when you need an export work area.
 3. **Razor** to split at the playhead (then drag segments), **Delete** to remove In→Out (confirm), or **Insert** / drag from Project onto the timeline. **Undo** / **Redo** (Ctrl+Z / Ctrl+Y) if you need to step back. Edit track titles and languages as needed.
 4. Drop **chapter markers** while watching (Tools droppers or Add marker — chapters on single Export), or **Add split** where each output file should start (name = filename).
 5. **Save Workspace** to keep project state, **Export** one MKV, or **Export multiple…** for a folder of split outputs (with marks set, Export keeps In→Out; Export multiple uses In/Out as outer bounds then splits). Closing with unsaved changes prompts Save / Don't save / Cancel.
