@@ -41,6 +41,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Native system menu bar (File / Edit / Tools / Help); themed About dialog; themed info / warning / error / string-prompt / yes-no dialogs
 - Dark hover tooltips on controls; quieter chrome; active clip / workspace name in window title
 - Softsub **attachments** (fonts, etc.) — probe counts them; cut / flatten / insert bake re-merge attachments from source MKV(s) after concat; simple Export remux keeps them via `-map 0`
+- **Preview Audio / Subs** — dropdowns above the preview to pick which audio track to hear and which softsub to show (text ASS/SRT/SSA/mov_text **and** bitmap PGS); picks persist in the workspace; Sel stays for Delete/Insert only
 
 ### Changed
 
@@ -52,6 +53,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed
 
 - Export failure on files with softsubs (`-disposition:s:N` instead of invalid `s:s:N`)
+- Hover tooltips no longer stick open after leaving a control or opening an OptionMenu
 
 ### Removed
 

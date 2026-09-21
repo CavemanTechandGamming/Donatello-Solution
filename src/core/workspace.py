@@ -38,6 +38,10 @@ class WorkspaceState:
     markers: dict[str, list[TimelineMarker]] = field(default_factory=dict)
     # media path key → audio stream_index → preview volume 0..2 (100% = 1.0)
     audio_volumes: dict[str, dict[int, float]] = field(default_factory=dict)
+    # media path key → stream_index heard in preview (audio)
+    preview_audio_stream: dict[str, int] = field(default_factory=dict)
+    # media path key → stream_index shown in preview (subtitle); omit / missing = off
+    preview_subtitle_stream: dict[str, int] = field(default_factory=dict)
     # media path key → edit decision list (ordered source spans for that clip's sequence)
     sequences: dict[str, EditDecision] = field(default_factory=dict)
 
@@ -102,6 +106,15 @@ def state_to_dict(state: WorkspaceState) -> dict:
             for stream_index, vol in by_stream.items()
         }
 
+    preview_audio_stream = {
+        media_key: int(stream_index)
+        for media_key, stream_index in state.preview_audio_stream.items()
+    }
+    preview_subtitle_stream = {
+        media_key: int(stream_index)
+        for media_key, stream_index in state.preview_subtitle_stream.items()
+    }
+
     return {
         "version": WORKSPACE_VERSION,
         "app": APP_NAME,
@@ -115,6 +128,8 @@ def state_to_dict(state: WorkspaceState) -> dict:
         "track_edits": track_edits,
         "markers": markers,
         "audio_volumes": audio_volumes,
+        "preview_audio_stream": preview_audio_stream,
+        "preview_subtitle_stream": preview_subtitle_stream,
         "sequences": sequences_to_dict(state.sequences),
     }
 
@@ -215,6 +230,26 @@ def state_from_dict(data: object) -> WorkspaceState:
             if str(media_key) != key:
                 volumes_out[str(media_key)] = parsed
 
+    def _stream_map(raw: object) -> dict[str, int]:
+        out: dict[str, int] = {}
+        if not isinstance(raw, dict):
+            return out
+        for media_key, stream_val in raw.items():
+            stream_index = _optional_int(stream_val)
+            if stream_index is None:
+                continue
+            try:
+                key = _path_key(Path(str(media_key)))
+            except OSError:
+                key = str(media_key)
+            out[key] = stream_index
+            if str(media_key) != key:
+                out[str(media_key)] = stream_index
+        return out
+
+    preview_audio_out = _stream_map(data.get("preview_audio_stream"))
+    preview_sub_out = _stream_map(data.get("preview_subtitle_stream"))
+
     sequences_out: dict[str, EditDecision] = {}
     for media_key, edl in sequences_from_dict(data.get("sequences")).items():
         try:
@@ -236,6 +271,8 @@ def state_from_dict(data: object) -> WorkspaceState:
         track_edits=edits_out,
         markers=markers_out,
         audio_volumes=volumes_out,
+        preview_audio_stream=preview_audio_out,
+        preview_subtitle_stream=preview_sub_out,
         sequences=sequences_out,
     )
 

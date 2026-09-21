@@ -23,6 +23,12 @@ from av.audio.resampler import AudioResampler
 from PIL import Image
 
 from src.core import settings as app_settings
+from src.core.preview_subs import (
+    ActiveSubtitle,
+    actives_from_subset,
+    composite_subtitles,
+    expire_actives,
+)
 
 _AUDIO_Q_SIZE = 256
 
@@ -71,6 +77,9 @@ class PreviewPlayer:
         self._monitor_layout = "stereo"
         self._volume = 1.0
         self._audio_type_index = 0
+        # None = subtitles hidden in preview
+        self._subtitle_type_index: int | None = None
+        self._video_src_size: tuple[int, int] = (0, 0)
 
     @property
     def path(self) -> Path | None:
@@ -108,6 +117,13 @@ class PreviewPlayer:
         """Which audio stream (0-based among audio) the monitor plays."""
         self._audio_type_index = max(0, int(type_index))
 
+    def set_subtitle_type_index(self, type_index: int | None) -> None:
+        """Which subtitle stream (0-based among subs) overlays preview; None = off."""
+        if type_index is None:
+            self._subtitle_type_index = None
+        else:
+            self._subtitle_type_index = max(0, int(type_index))
+
     def open(self, path: Path, duration: float | None = None) -> None:
         self.stop()
         path = Path(path).expanduser().resolve()
@@ -116,6 +132,7 @@ class PreviewPlayer:
         self._position = 0.0
         self._fps = 24.0
         self._frame_duration = 1.0 / 24.0
+        self._video_src_size = (0, 0)
         try:
             with av.open(str(path)) as container:
                 if self._duration is None:
@@ -123,6 +140,10 @@ class PreviewPlayer:
                         self._duration = float(container.duration) / av.time_base
                 if container.streams.video:
                     video = container.streams.video[0]
+                    self._video_src_size = (
+                        int(video.width or 0),
+                        int(video.height or 0),
+                    )
                     rate = video.average_rate or video.base_rate
                     if rate is not None:
                         try:
@@ -378,22 +399,95 @@ class PreviewPlayer:
             if not container.streams.video:
                 return None
             video = container.streams.video[0]
-            # Seek near target (microseconds on container timeline)
-            offset = int(max(0.0, seconds) / video.time_base) if video.time_base else 0
+            src_w = int(video.width or self._video_src_size[0] or 0)
+            src_h = int(video.height or self._video_src_size[1] or 0)
+            if src_w and src_h:
+                self._video_src_size = (src_w, src_h)
+
+            sub_stream = self._resolve_subtitle_stream(container)
+            actives: list[ActiveSubtitle] = []
+
+            # Seek slightly early so bitmap (PGS) decoder state can catch up.
+            seek_t = max(0.0, seconds - (1.0 if sub_stream is not None else 0.0))
+            offset = int(seek_t / video.time_base) if video.time_base else 0
             try:
                 container.seek(offset, stream=video, any_frame=False, backward=True)
             except av.AVError:
                 container.seek(0)
-            for frame in container.decode(video=0):
-                pts = float(frame.pts * video.time_base) if frame.pts is not None else seconds
-                if pts + 0.05 < seconds:
+
+            streams = [video] + ([sub_stream] if sub_stream is not None else [])
+            image: Image.Image | None = None
+            for packet in container.demux(streams):
+                if (
+                    sub_stream is not None
+                    and packet.stream.index == sub_stream.index
+                ):
+                    actives = self._ingest_subtitle_packet(
+                        sub_stream, packet, actives, src_w=src_w, src_h=src_h
+                    )
                     continue
-                return self._scale(frame.to_image())
-            # Fallback: first frame after seek
-            container.seek(0)
-            for frame in container.decode(video=0):
-                return self._scale(frame.to_image())
-        return None
+                if packet.stream.index != video.index:
+                    continue
+                try:
+                    frames = packet.decode()
+                except av.AVError:
+                    continue
+                for frame in frames:
+                    if not isinstance(frame, av.VideoFrame):
+                        continue
+                    pts = (
+                        float(frame.pts * video.time_base)
+                        if frame.pts is not None
+                        else seconds
+                    )
+                    if pts + 0.05 < seconds:
+                        continue
+                    image = self._scale(frame.to_image())
+                    actives = expire_actives(actives, seconds)
+                    return composite_subtitles(image, actives)
+
+            if image is None:
+                container.seek(0)
+                for frame in container.decode(video=0):
+                    image = self._scale(frame.to_image())
+                    break
+            if image is None:
+                return None
+            actives = expire_actives(actives, seconds)
+            return composite_subtitles(image, actives)
+
+    def _resolve_subtitle_stream(self, container):  # noqa: ANN001
+        if self._subtitle_type_index is None:
+            return None
+        subs = list(container.streams.subtitles)
+        if not subs:
+            return None
+        idx = min(self._subtitle_type_index, len(subs) - 1)
+        return subs[idx]
+
+    def _ingest_subtitle_packet(
+        self,
+        sub_stream,  # noqa: ANN001
+        packet,  # noqa: ANN001
+        actives: list[ActiveSubtitle],
+        *,
+        src_w: int,
+        src_h: int,
+    ) -> list[ActiveSubtitle]:
+        try:
+            subset = sub_stream.decode2(packet)
+        except Exception:
+            return actives
+        if subset is None:
+            return actives
+        new_actives = actives_from_subset(subset, src_w=src_w, src_h=src_h)
+        # A decode with no drawable rects clears the screen (PGS clear).
+        if not subset.rects or not new_actives:
+            if not subset.rects:
+                return []
+            # Timed empty → still replace
+            return new_actives
+        return new_actives
 
     def _playback_loop(self) -> None:
         path = self._path
@@ -413,6 +507,14 @@ class PreviewPlayer:
                     self._frame_queue.put(None)
                     return
 
+                src_w = int(video.width or self._video_src_size[0] or 0)
+                src_h = int(video.height or self._video_src_size[1] or 0)
+                if src_w and src_h:
+                    self._video_src_size = (src_w, src_h)
+
+                sub_stream = self._resolve_subtitle_stream(container)
+                actives: list[ActiveSubtitle] = []
+
                 resampler: AudioResampler | None = None
                 if audio is not None:
                     rate = self._sample_rate
@@ -423,18 +525,31 @@ class PreviewPlayer:
                         rate=rate,
                     )
 
-                offset = int(max(0.0, start_pos) / video.time_base) if video.time_base else 0
+                seek_t = max(0.0, start_pos - (1.0 if sub_stream is not None else 0.0))
+                offset = int(seek_t / video.time_base) if video.time_base else 0
                 try:
                     container.seek(offset, stream=video, any_frame=False, backward=True)
                 except av.AVError:
                     container.seek(0)
 
                 wall0 = time.perf_counter()
-                streams = [video] + ([audio] if audio is not None else [])
+                streams = [video]
+                if audio is not None:
+                    streams.append(audio)
+                if sub_stream is not None:
+                    streams.append(sub_stream)
 
                 for packet in container.demux(streams):
                     if self._stop.is_set():
                         break
+                    if (
+                        sub_stream is not None
+                        and packet.stream.index == sub_stream.index
+                    ):
+                        actives = self._ingest_subtitle_packet(
+                            sub_stream, packet, actives, src_w=src_w, src_h=src_h
+                        )
+                        continue
                     try:
                         frames = packet.decode()
                     except av.AVError:
@@ -466,6 +581,8 @@ class PreviewPlayer:
                             time.sleep(min(delay, 0.02))
                             delay = target - time.perf_counter()
                         image = self._scale(frame.to_image())
+                        actives = expire_actives(actives, pts)
+                        image = composite_subtitles(image, actives)
                         preview = PreviewFrame(image=image, position=pts)
                         # Drop oldest if UI is slow
                         try:

@@ -31,7 +31,8 @@ class HoverTip:
     def _bind_tree(self, widget) -> None:
         widget.bind("<Enter>", self._on_enter, add="+")
         widget.bind("<Leave>", self._on_leave, add="+")
-        widget.bind("<ButtonPress>", self._on_leave, add="+")
+        widget.bind("<ButtonPress>", self._on_press, add="+")
+        widget.bind("<Destroy>", self._on_destroy, add="+")
         try:
             for child in widget.winfo_children():
                 self._bind_tree(child)
@@ -42,20 +43,35 @@ class HoverTip:
         self._cancel()
         self._after_id = self._widget.after(self._delay_ms, self._show)
 
-    def _on_leave(self, event=None) -> None:
-        # Ignore leave if pointer moved into a child of the same control
-        if event is not None:
-            try:
-                x, y = self._widget.winfo_pointerxy()
-                under = self._widget.winfo_containing(x, y)
-                if under is not None:
-                    w = under
-                    while w is not None:
-                        if w == self._widget:
-                            return
-                        w = w.master
-            except Exception:
-                pass
+    def _on_press(self, _event=None) -> None:
+        # Clicking (e.g. opening an OptionMenu) must dismiss immediately.
+        self._cancel()
+        self._hide()
+
+    def _on_destroy(self, _event=None) -> None:
+        self._cancel()
+        self._hide()
+
+    def _pointer_inside_widget(self) -> bool:
+        """True if the mouse is still within the control's screen box."""
+        try:
+            if not self._widget.winfo_exists():
+                return False
+            x, y = self._widget.winfo_pointerxy()
+            left = self._widget.winfo_rootx()
+            top = self._widget.winfo_rooty()
+            right = left + max(0, self._widget.winfo_width())
+            bottom = top + max(0, self._widget.winfo_height())
+            return left <= x < right and top <= y < bottom
+        except Exception:
+            return False
+
+    def _on_leave(self, _event=None) -> None:
+        # Ignore Leave events caused by moving between a parent and its children.
+        # Use the widget bbox (not winfo_containing) so foreign popups / tip
+        # windows don't keep a tip stuck open.
+        if self._pointer_inside_widget():
+            return
         self._cancel()
         self._hide()
 
@@ -69,11 +85,12 @@ class HoverTip:
 
     def _hide(self) -> None:
         if self._tip is not None:
+            tip = self._tip
+            self._tip = None
             try:
-                self._tip.destroy()
+                tip.destroy()
             except Exception:
                 pass
-            self._tip = None
 
     def _show(self) -> None:
         self._after_id = None
@@ -83,6 +100,9 @@ class HoverTip:
             if not self._widget.winfo_exists():
                 return
         except tk.TclError:
+            return
+        # Pointer already left during the delay — don't show a orphan tip.
+        if not self._pointer_inside_widget():
             return
 
         tip_win = ctk.CTkToplevel(self._widget)

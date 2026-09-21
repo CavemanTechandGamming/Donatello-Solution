@@ -149,6 +149,8 @@ class DonatelloApp(ctk.CTk, TkinterDnD.DnDWrapper):
         self._edits: dict[str, dict[int, TrackEditState]] = {}
         self._markers: dict[str, list[TimelineMarker]] = {}
         self._audio_volumes: dict[str, dict[int, float]] = {}
+        self._preview_audio_stream: dict[str, int] = {}
+        self._preview_subtitle_stream: dict[str, int] = {}
         self._sequences: dict[str, EditDecision] = {}
         self._undo_stack = UndoStack()
         self._preview_media_path: Path | None = None
@@ -158,6 +160,8 @@ class DonatelloApp(ctk.CTk, TkinterDnD.DnDWrapper):
         self._mark_in: float | None = None
         self._mark_out: float | None = None
         self._selected_stream_index: int | None = None
+        self._monitor_audio_stream_index: int | None = None
+        self._visible_subtitle_stream_index: int | None = None
         self._workspace_path: Path | None = None
         self._saved_fingerprint: str = ""
         self._autosave_job: str | None = None
@@ -521,7 +525,7 @@ class DonatelloApp(ctk.CTk, TkinterDnD.DnDWrapper):
         preview = ctk.CTkFrame(tracks_frame, fg_color=("gray88", "gray16"), corner_radius=0)
         preview.grid(row=0, column=0, sticky="nsew")
         preview.grid_columnconfigure(0, weight=1)
-        preview.grid_rowconfigure(1, weight=1)
+        preview.grid_rowconfigure(2, weight=1)
         self._preview_frame = preview
 
         ctk.CTkLabel(
@@ -531,18 +535,50 @@ class DonatelloApp(ctk.CTk, TkinterDnD.DnDWrapper):
             font=ctk.CTkFont(size=13, weight="bold"),
         ).grid(row=0, column=0, sticky="ew", padx=12, pady=(8, 2))
 
+        track_pick = ctk.CTkFrame(preview, fg_color="transparent")
+        track_pick.grid(row=1, column=0, sticky="ew", padx=12, pady=(0, 2))
+        track_pick.grid_columnconfigure(1, weight=1)
+        track_pick.grid_columnconfigure(3, weight=1)
+
+        ctk.CTkLabel(track_pick, text="Audio", width=56, anchor="w").grid(
+            row=0, column=0, sticky="w", padx=(0, 6)
+        )
+        self._preview_audio_menu = ctk.CTkOptionMenu(
+            track_pick,
+            values=["(no audio)"],
+            command=self._on_preview_audio_menu,
+            width=200,
+            state="disabled",
+        )
+        self._preview_audio_menu.grid(row=0, column=1, sticky="ew", padx=(0, 16))
+
+        ctk.CTkLabel(track_pick, text="Subs", width=44, anchor="w").grid(
+            row=0, column=2, sticky="w", padx=(0, 6)
+        )
+        self._preview_sub_menu = ctk.CTkOptionMenu(
+            track_pick,
+            values=["Off"],
+            command=self._on_preview_subtitle_menu,
+            width=200,
+            state="disabled",
+        )
+        self._preview_sub_menu.grid(row=0, column=3, sticky="ew")
+        self._preview_audio_menu_map: dict[str, int] = {}
+        self._preview_sub_menu_map: dict[str, int] = {}
+        self._updating_preview_menus = False
+
         self._preview_label = ctk.CTkLabel(
             preview,
             text="",
             fg_color=("gray80", "gray12"),
             corner_radius=6,
         )
-        self._preview_label.grid(row=1, column=0, sticky="nsew", padx=12, pady=4)
+        self._preview_label.grid(row=2, column=0, sticky="nsew", padx=12, pady=4)
         self._preview_label.bind("<Configure>", self._on_preview_resize)
         self._resize_job: str | None = None
 
         transport = ctk.CTkFrame(preview, fg_color="transparent")
-        transport.grid(row=2, column=0, sticky="ew", padx=12, pady=(2, 2))
+        transport.grid(row=3, column=0, sticky="ew", padx=12, pady=(2, 2))
 
         self._btn_skip_back = ctk.CTkButton(
             transport, text="<< 5s", width=64, command=lambda: self._step_seconds(-1)
@@ -606,7 +642,7 @@ class DonatelloApp(ctk.CTk, TkinterDnD.DnDWrapper):
         self._time_label.pack(side="left", padx=(8, 0))
 
         scrub_row = ctk.CTkFrame(preview, fg_color="transparent")
-        scrub_row.grid(row=3, column=0, sticky="ew", padx=12, pady=(0, 8))
+        scrub_row.grid(row=4, column=0, sticky="ew", padx=12, pady=(0, 8))
         scrub_row.grid_columnconfigure(0, weight=1)
         self._scrub = ctk.CTkSlider(
             scrub_row, from_=0, to=1, number_of_steps=1000, command=self._on_scrub
@@ -1081,6 +1117,8 @@ class DonatelloApp(ctk.CTk, TkinterDnD.DnDWrapper):
             track_edits={k: dict(v) for k, v in self._edits.items()},
             markers={k: list(v) for k, v in self._markers.items()},
             audio_volumes={k: dict(v) for k, v in self._audio_volumes.items()},
+            preview_audio_stream=dict(self._preview_audio_stream),
+            preview_subtitle_stream=dict(self._preview_subtitle_stream),
             sequences={k: EditDecision(segments=list(v.segments)) for k, v in self._sequences.items()},
         )
 
@@ -1219,6 +1257,8 @@ class DonatelloApp(ctk.CTk, TkinterDnD.DnDWrapper):
         self._edits.clear()
         self._markers.clear()
         self._audio_volumes.clear()
+        self._preview_audio_stream.clear()
+        self._preview_subtitle_stream.clear()
         self._sequences.clear()
         self._undo_stack.clear()
         self._show_empty_state()
@@ -1284,6 +1324,8 @@ class DonatelloApp(ctk.CTk, TkinterDnD.DnDWrapper):
         self._audio_volumes = {
             k: dict(v) for k, v in state.audio_volumes.items()
         }
+        self._preview_audio_stream = dict(state.preview_audio_stream)
+        self._preview_subtitle_stream = dict(state.preview_subtitle_stream)
         self._sequences = {
             k: EditDecision(segments=list(v.segments))
             for k, v in state.sequences.items()
@@ -1885,7 +1927,10 @@ class DonatelloApp(ctk.CTk, TkinterDnD.DnDWrapper):
         self._lanes.clear()
         self._clear_marks()
         self._selected_stream_index = None
+        self._monitor_audio_stream_index = None
+        self._visible_subtitle_stream_index = None
         self._reset_preview_ui()
+        self._refresh_preview_track_menus()
         self._refresh_window_title()
 
     def _reset_preview_ui(self) -> None:
@@ -1903,6 +1948,7 @@ class DonatelloApp(ctk.CTk, TkinterDnD.DnDWrapper):
 
     def _open_preview(self, result: ProbeResult) -> None:
         file_duration = result.duration_seconds or 0.0
+        self._sync_preview_monitor()
         self._player.open(result.path, file_duration if file_duration > 0 else None)
         self._preview_media_path = result.path
         timeline_dur = self._timeline_duration()
@@ -1937,6 +1983,7 @@ class DonatelloApp(ctk.CTk, TkinterDnD.DnDWrapper):
             return False
         was_playing = self._player.playing
         dur = result.duration_seconds or 0.0
+        self._sync_preview_monitor()
         self._player.open(result.path, dur if dur > 0 else None)
         self._preview_media_path = result.path
         if was_playing:
@@ -2330,6 +2377,7 @@ class DonatelloApp(ctk.CTk, TkinterDnD.DnDWrapper):
             self._selected_stream_index = restore_stream
         else:
             self._selected_stream_index = None
+        self._restore_preview_track_picks(result)
         self._ensure_edits(result)
         self._seed_markers_from_probe(result)
         self._ensure_sequence(result)
@@ -2453,7 +2501,7 @@ class DonatelloApp(ctk.CTk, TkinterDnD.DnDWrapper):
     def _apply_result(self, result: ProbeResult) -> None:
         self._ensure_edits(result)
         self._refresh_timeline_lanes()
-        self._sync_preview_monitor_audio()
+        self._sync_preview_monitor()
 
     def _audio_volume_map(self) -> dict[int, float]:
         if self._active_path is None:
@@ -2468,6 +2516,90 @@ class DonatelloApp(ctk.CTk, TkinterDnD.DnDWrapper):
         value = float(max(0.0, min(2.0, volume)))
         self._audio_volume_map()[stream_index] = value
         if self._result is None:
+            self._refresh_window_title()
+            return
+        if (
+            self._monitor_audio_stream_index is not None
+            and self._monitor_audio_stream_index == stream_index
+        ):
+            self._player.set_volume(value)
+        self._refresh_window_title()
+
+    def _restore_preview_track_picks(self, result: ProbeResult) -> None:
+        """Load Mon/Vis picks for this clip (defaults: first audio, subs off)."""
+        key = _path_key(result.path)
+        audios = [t for t in result.tracks if t.kind == "audio"]
+        saved_audio = self._preview_audio_stream.get(key)
+        if saved_audio is not None and any(
+            t.stream_index == saved_audio for t in audios
+        ):
+            self._monitor_audio_stream_index = saved_audio
+        elif audios:
+            self._monitor_audio_stream_index = audios[0].stream_index
+            self._preview_audio_stream[key] = audios[0].stream_index
+        else:
+            self._monitor_audio_stream_index = None
+
+        subs = [t for t in result.tracks if t.kind == "subtitle"]
+        saved_sub = self._preview_subtitle_stream.get(key)
+        if saved_sub is not None and any(t.stream_index == saved_sub for t in subs):
+            self._visible_subtitle_stream_index = saved_sub
+        else:
+            self._visible_subtitle_stream_index = None
+            self._preview_subtitle_stream.pop(key, None)
+
+    def _sync_preview_monitor(self) -> None:
+        """Push Mon/Vis picks into the preview player."""
+        if self._result is None:
+            self._player.set_audio_type_index(0)
+            self._player.set_subtitle_type_index(None)
+            self._player.set_volume(1.0)
+            return
+
+        audios = [t for t in self._result.tracks if t.kind == "audio"]
+        if not audios:
+            self._player.set_audio_type_index(0)
+            self._player.set_volume(1.0)
+        else:
+            chosen = audios[0]
+            if self._monitor_audio_stream_index is not None:
+                for track in audios:
+                    if track.stream_index == self._monitor_audio_stream_index:
+                        chosen = track
+                        break
+            self._monitor_audio_stream_index = chosen.stream_index
+            if self._active_path is not None:
+                self._preview_audio_stream[_path_key(self._active_path)] = (
+                    chosen.stream_index
+                )
+            self._player.set_audio_type_index(chosen.type_index)
+            self._player.set_volume(self._get_audio_volume(chosen.stream_index))
+
+        subs = [t for t in self._result.tracks if t.kind == "subtitle"]
+        sub_type: int | None = None
+        if self._visible_subtitle_stream_index is not None:
+            for track in subs:
+                if track.stream_index == self._visible_subtitle_stream_index:
+                    sub_type = track.type_index
+                    break
+            if sub_type is None:
+                self._visible_subtitle_stream_index = None
+        self._player.set_subtitle_type_index(sub_type)
+
+    def _restart_preview_if_playing(self) -> None:
+        """Re-apply monitor settings; restart so a mid-play change is heard/seen."""
+        self._sync_preview_monitor()
+        was_playing = self._player.playing
+        pos = float(self._player.position)
+        if was_playing:
+            self._player.pause()
+        self._player.show_frame_at(pos)
+        if was_playing:
+            self._player.play()
+            self._play_btn.configure(text="Pause")
+
+    def _monitor_audio_stream(self, stream_index: int) -> None:
+        if self._result is None:
             return
         track = next(
             (t for t in self._result.tracks if t.stream_index == stream_index),
@@ -2475,43 +2607,138 @@ class DonatelloApp(ctk.CTk, TkinterDnD.DnDWrapper):
         )
         if track is None or track.kind != "audio":
             return
-        # Live monitor follows selected audio (or first audio).
-        selected = None
-        if self._selected_stream_index is not None:
-            selected = next(
-                (
-                    t
-                    for t in self._result.tracks
-                    if t.stream_index == self._selected_stream_index
-                ),
-                None,
-            )
-        monitor = selected if selected and selected.kind == "audio" else next(
-            (t for t in self._result.tracks if t.kind == "audio"),
-            None,
-        )
-        if monitor is not None and monitor.stream_index == stream_index:
-            self._player.set_volume(value)
+        self._monitor_audio_stream_index = stream_index
+        if self._active_path is not None:
+            self._preview_audio_stream[_path_key(self._active_path)] = stream_index
+        self._restart_preview_if_playing()
+        self._refresh_preview_track_menus()
         self._refresh_window_title()
 
-    def _sync_preview_monitor_audio(self) -> None:
+    def _set_visible_subtitle(self, stream_index: int | None) -> None:
         if self._result is None:
-            self._player.set_audio_type_index(0)
-            self._player.set_volume(1.0)
+            self._visible_subtitle_stream_index = None
             return
-        audios = [t for t in self._result.tracks if t.kind == "audio"]
-        if not audios:
-            self._player.set_audio_type_index(0)
-            self._player.set_volume(1.0)
+        if stream_index is not None:
+            track = next(
+                (t for t in self._result.tracks if t.stream_index == stream_index),
+                None,
+            )
+            if track is None or track.kind != "subtitle":
+                return
+        self._visible_subtitle_stream_index = stream_index
+        if self._active_path is not None:
+            key = _path_key(self._active_path)
+            if stream_index is None:
+                self._preview_subtitle_stream.pop(key, None)
+            else:
+                self._preview_subtitle_stream[key] = stream_index
+        self._restart_preview_if_playing()
+        self._refresh_preview_track_menus()
+        self._refresh_window_title()
+
+    def _preview_track_menu_label(self, track: MediaTrack) -> str:
+        label = track.display_label()
+        if len(label) > 56:
+            return label[:55] + "…"
+        return label
+
+    def _refresh_preview_track_menus(self) -> None:
+        if not hasattr(self, "_preview_audio_menu"):
             return
-        chosen = audios[0]
-        if self._selected_stream_index is not None:
+        self._updating_preview_menus = True
+        try:
+            if self._result is None:
+                self._preview_audio_menu_map = {}
+                self._preview_sub_menu_map = {}
+                self._preview_audio_menu.configure(
+                    values=["(no audio)"], state="disabled"
+                )
+                self._preview_audio_menu.set("(no audio)")
+                self._preview_sub_menu.configure(values=["Off"], state="disabled")
+                self._preview_sub_menu.set("Off")
+                return
+
+            audios = [t for t in self._result.tracks if t.kind == "audio"]
+            audio_map: dict[str, int] = {}
+            audio_values: list[str] = []
             for track in audios:
-                if track.stream_index == self._selected_stream_index:
-                    chosen = track
-                    break
-        self._player.set_audio_type_index(chosen.type_index)
-        self._player.set_volume(self._get_audio_volume(chosen.stream_index))
+                label = self._preview_track_menu_label(track)
+                # Disambiguate duplicate labels
+                base = label
+                n = 2
+                while label in audio_map:
+                    label = f"{base} ({n})"
+                    n += 1
+                audio_map[label] = track.stream_index
+                audio_values.append(label)
+            self._preview_audio_menu_map = audio_map
+            if not audio_values:
+                self._preview_audio_menu.configure(
+                    values=["(no audio)"], state="disabled"
+                )
+                self._preview_audio_menu.set("(no audio)")
+            else:
+                self._preview_audio_menu.configure(values=audio_values, state="normal")
+                chosen = next(
+                    (
+                        label
+                        for label, idx in audio_map.items()
+                        if idx == self._monitor_audio_stream_index
+                    ),
+                    audio_values[0],
+                )
+                self._preview_audio_menu.set(chosen)
+
+            subs = [t for t in self._result.tracks if t.kind == "subtitle"]
+            sub_map: dict[str, int] = {}
+            sub_values = ["Off"]
+            for track in subs:
+                label = self._preview_track_menu_label(track)
+                base = label
+                n = 2
+                while label in sub_map or label == "Off":
+                    label = f"{base} ({n})"
+                    n += 1
+                sub_map[label] = track.stream_index
+                sub_values.append(label)
+            self._preview_sub_menu_map = sub_map
+            self._preview_sub_menu.configure(
+                values=sub_values,
+                state="normal" if subs else "disabled",
+            )
+            if self._visible_subtitle_stream_index is None:
+                self._preview_sub_menu.set("Off")
+            else:
+                chosen_sub = next(
+                    (
+                        label
+                        for label, idx in sub_map.items()
+                        if idx == self._visible_subtitle_stream_index
+                    ),
+                    "Off",
+                )
+                self._preview_sub_menu.set(chosen_sub)
+        finally:
+            self._updating_preview_menus = False
+
+    def _on_preview_audio_menu(self, choice: str) -> None:
+        if self._updating_preview_menus:
+            return
+        stream_index = self._preview_audio_menu_map.get(choice)
+        if stream_index is None:
+            return
+        self._monitor_audio_stream(stream_index)
+
+    def _on_preview_subtitle_menu(self, choice: str) -> None:
+        if self._updating_preview_menus:
+            return
+        if choice == "Off":
+            self._set_visible_subtitle(None)
+            return
+        stream_index = self._preview_sub_menu_map.get(choice)
+        if stream_index is None:
+            return
+        self._set_visible_subtitle(stream_index)
 
     def _refresh_timeline_lanes(self) -> None:
         if not hasattr(self, "_lanes"):
@@ -2558,6 +2785,7 @@ class DonatelloApp(ctk.CTk, TkinterDnD.DnDWrapper):
             position=float(self._player.position),
             segment_spans=spans,
         )
+        self._refresh_preview_track_menus()
         self._refresh_window_title()
 
     def _on_segment_reorder(self, from_index: int, drop_timeline_t: float) -> None:
@@ -2597,7 +2825,7 @@ class DonatelloApp(ctk.CTk, TkinterDnD.DnDWrapper):
         self._update_marks_label()
         if hasattr(self, "_lanes"):
             self._lanes.set_selected(stream_index)
-        self._sync_preview_monitor_audio()
+        # Sel is for Delete/Insert only — does not change Mon/Vis.
 
     def _mark_in_here(self) -> None:
         if self._active_path is None:
