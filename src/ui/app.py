@@ -208,15 +208,28 @@ class DonatelloApp(ctk.CTk, TkinterDnD.DnDWrapper):
         self._menubar.add_menu(
             "Edit",
             [
-                ("Undo", self._undo_edit),
-                ("Redo", self._redo_edit),
+                ("Undo", self._undo_edit, "Ctrl+Z"),
+                ("Redo", self._redo_edit, "Ctrl+Y"),
                 ("---", None),
-                ("Settings", self.open_settings),
+                ("Settings", self.open_settings, "Ctrl+,"),
                 ("---", None),
                 ("Clear marks", self._clear_marks),
                 ("Add marker", self._add_marker_here),
                 ("Add split", self._add_split_here),
                 ("Markers", self._manage_markers),
+            ],
+        )
+        self._menubar.add_menu(
+            "Tools",
+            [
+                ("Mark In", self._mark_in_here, "["),
+                ("Mark Out", self._mark_out_here, "]"),
+                ("---", None),
+                ("Prelog", lambda: self._drop_named_chapter("Prelog"), "1"),
+                ("Intro", lambda: self._drop_named_chapter("Intro"), "2"),
+                ("Episode", lambda: self._drop_named_chapter("Episode"), "3"),
+                ("Credits", lambda: self._drop_named_chapter("Credits"), "4"),
+                ("Epilog", lambda: self._drop_named_chapter("Epilog"), "5"),
             ],
         )
         self._menubar.add_menu(
@@ -238,6 +251,40 @@ class DonatelloApp(ctk.CTk, TkinterDnD.DnDWrapper):
         self.bind_all("<Control-z>", lambda _e: self._undo_edit())
         self.bind_all("<Control-y>", lambda _e: self._redo_edit())
         self.bind_all("<Control-Shift-Z>", lambda _e: self._redo_edit())
+
+        droppers = ("Prelog", "Intro", "Episode", "Credits", "Epilog")
+        for digit, name in enumerate(droppers, start=1):
+            handler = self._hotkey(lambda n=name: self._drop_named_chapter(n))
+            self.bind_all(f"<Key-{digit}>", handler)
+            self.bind_all(f"<KP_{digit}>", handler)
+        self.bind_all("<bracketleft>", self._hotkey(self._mark_in_here))
+        self.bind_all("<bracketright>", self._hotkey(self._mark_out_here))
+
+    def _focus_is_typing(self) -> bool:
+        """True when a text field has focus — bare hotkeys must not fire."""
+        try:
+            widget = self.focus_get()
+        except Exception:
+            return False
+        if widget is None:
+            return False
+        name = type(widget).__name__.lower()
+        if "entry" in name or "text" in name or "spinbox" in name:
+            return True
+        try:
+            cls = widget.winfo_class()
+        except Exception:
+            return False
+        return cls in ("Entry", "Text", "TEntry", "TCombobox", "Spinbox")
+
+    def _hotkey(self, callback):
+        def handler(_event=None):
+            if self._focus_is_typing():
+                return None
+            callback()
+            return "break"
+
+        return handler
 
     def _open_log_from_menu(self) -> None:
         from src.core.logging_setup import open_log_file
@@ -420,7 +467,7 @@ class DonatelloApp(ctk.CTk, TkinterDnD.DnDWrapper):
             btn_in,
             "Mark In",
             "Start of the export work area (and Delete range). "
-            "Frames before In are not exported.",
+            "Frames before In are not exported.\nShortcut: [",
         )
 
         btn_out = ctk.CTkButton(
@@ -431,7 +478,7 @@ class DonatelloApp(ctk.CTk, TkinterDnD.DnDWrapper):
             btn_out,
             "Mark Out",
             "End of the export work area (and Delete range). "
-            "Frames after Out are not exported.",
+            "Frames after Out are not exported.\nShortcut: ]",
         )
 
         btn_clear = ctk.CTkButton(
@@ -2329,12 +2376,32 @@ class DonatelloApp(ctk.CTk, TkinterDnD.DnDWrapper):
         if name is None:
             return
         name = name.strip() or default_name
+        self._place_chapter_marker(t, name)
+
+    def _drop_named_chapter(self, name: str) -> None:
+        """Tools dropper — one-click chapter at the playhead (no prompt)."""
+        if self._active_path is None:
+            dialogs.show_warning(
+                name,
+                "Load a clip onto the timeline first.",
+                parent=self,
+            )
+            return
+        t = float(self._playhead_timeline())
+        self._place_chapter_marker(t, name)
+
+    def _place_chapter_marker(self, time: float, name: str) -> None:
         markers = self._active_marker_list()
         markers.append(
-            TimelineMarker(time=t, name=name, kind=MARKER_KIND_CHAPTER)
+            TimelineMarker(time=float(time), name=name, kind=MARKER_KIND_CHAPTER)
         )
         markers.sort(key=lambda m: (m.time, m.kind, m.name.lower()))
-        logger.info("Added chapter marker %r @ %.3f on %s", name, t, self._active_path.name)
+        logger.info(
+            "Added chapter marker %r @ %.3f on %s",
+            name,
+            time,
+            self._active_path.name if self._active_path else "?",
+        )
         self._update_marks_label()
 
     def _add_split_here(self) -> None:

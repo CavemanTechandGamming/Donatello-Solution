@@ -6,6 +6,85 @@ from collections.abc import Callable
 
 import customtkinter as ctk
 
+# (label, command) or (label, command, accelerator) or ("---", None)
+MenuItem = tuple
+
+
+def _parse_item(
+    item: MenuItem,
+) -> tuple[str, Callable[[], None] | None, str | None]:
+    if not item:
+        return "---", None, None
+    label = item[0]
+    if label == "---":
+        return "---", None, None
+    command = item[1] if len(item) > 1 else None
+    accel = item[2] if len(item) > 2 else None
+    return str(label), command, (str(accel) if accel else None)
+
+
+class _MenuRow(ctk.CTkFrame):
+    """One menu line: action on the left, shortcut flush right (Cursor-style)."""
+
+    def __init__(
+        self,
+        master,
+        label: str,
+        *,
+        accelerator: str | None = None,
+        command: Callable[[], None] | None = None,
+        on_pick: Callable[[], None] | None = None,
+    ) -> None:
+        super().__init__(master, fg_color="transparent", height=30, corner_radius=4)
+        self.pack_propagate(False)
+        self._command = command
+        self._on_pick = on_pick
+        self._idle = "transparent"
+        self._hover = ("#3d3d3d", "#3d3d3d")
+
+        self.grid_columnconfigure(0, weight=1)
+        self.grid_rowconfigure(0, weight=1)
+
+        self._name = ctk.CTkLabel(
+            self,
+            text=label,
+            anchor="w",
+            text_color=("#e8e8e8", "#e8e8e8"),
+            font=ctk.CTkFont(size=13),
+        )
+        self._name.grid(row=0, column=0, sticky="ew", padx=(12, 28), pady=4)
+
+        if accelerator:
+            self._accel = ctk.CTkLabel(
+                self,
+                text=accelerator,
+                anchor="e",
+                text_color=("#9a9a9a", "#9a9a9a"),
+                font=ctk.CTkFont(size=12),
+            )
+            self._accel.grid(row=0, column=1, sticky="e", padx=(0, 12), pady=4)
+        else:
+            self._accel = None
+
+        for widget in (self, self._name, self._accel):
+            if widget is None:
+                continue
+            widget.bind("<Enter>", self._on_enter)
+            widget.bind("<Leave>", self._on_leave)
+            widget.bind("<Button-1>", self._on_click)
+
+    def _on_enter(self, _event=None) -> None:
+        self.configure(fg_color=self._hover)
+
+    def _on_leave(self, _event=None) -> None:
+        self.configure(fg_color=self._idle)
+
+    def _on_click(self, _event=None) -> None:
+        if self._on_pick is not None:
+            self._on_pick()
+        if self._command is not None:
+            self._command()
+
 
 class _MenuPopup(ctk.CTkToplevel):
     """Simple dropdown under a menu button."""
@@ -13,7 +92,7 @@ class _MenuPopup(ctk.CTkToplevel):
     def __init__(
         self,
         master,
-        items: list[tuple[str, Callable[[], None] | None]],
+        items: list[MenuItem],
         *,
         on_close: Callable[[], None] | None = None,
     ) -> None:
@@ -36,35 +115,43 @@ class _MenuPopup(ctk.CTkToplevel):
         )
         frame.pack(fill="both", expand=True)
 
-        for label, command in items:
+        # Width from longest label + accelerator so shortcuts sit on a clean column.
+        min_w = 200
+        for raw in items:
+            label, _cmd, accel = _parse_item(raw)
+            if label == "---":
+                continue
+            est = 12 * len(label) + 24
+            if accel:
+                est += 12 * len(accel) + 40
+            min_w = max(min_w, est)
+
+        for raw in items:
+            label, command, accel = _parse_item(raw)
             if label == "---":
                 ctk.CTkFrame(frame, height=1, fg_color=("#555555", "#555555")).pack(
                     fill="x", padx=8, pady=4
                 )
                 continue
 
-            def _run(cmd: Callable[[], None] | None = command) -> None:
-                self._dismiss()
-                if cmd is not None:
-                    cmd()
-
-            ctk.CTkButton(
+            row = _MenuRow(
                 frame,
-                text=label,
-                anchor="w",
-                height=30,
-                corner_radius=4,
-                fg_color="transparent",
-                hover_color=("#3d3d3d", "#3d3d3d"),
-                text_color=("#e8e8e8", "#e8e8e8"),
-                command=_run,
-            ).pack(fill="x", padx=4, pady=1)
+                label,
+                accelerator=accel,
+                command=command,
+                on_pick=self._dismiss,
+            )
+            row.configure(width=min_w)
+            row.pack(fill="x", padx=4, pady=1)
 
         self.bind("<Escape>", lambda _e: self._dismiss())
+        self._min_w = min_w
 
     def popup(self, x: int, y: int) -> None:
         self.update_idletasks()
-        self.geometry(f"+{x}+{y}")
+        h = max(40, self.winfo_reqheight())
+        w = max(self._min_w + 16, self.winfo_reqwidth())
+        self.geometry(f"{w}x{h}+{x}+{y}")
         self.deiconify()
         self.lift()
         self.focus_force()
@@ -104,16 +191,20 @@ class ThemedMenuBar(ctk.CTkFrame):
 
         self._open_popup: _MenuPopup | None = None
         self._open_title: str | None = None
-        self._menus: dict[str, list[tuple[str, Callable[[], None] | None]]] = {}
+        self._menus: dict[str, list[MenuItem]] = {}
 
     def add_menu(
         self,
         title: str,
-        items: list[tuple[str, Callable[[], None] | None]],
+        items: list[MenuItem],
         *,
         last: bool = False,
     ) -> None:
-        """Add a top-level menu. Pass last=True for Help (always rightmost)."""
+        """Add a top-level menu. Pass last=True for Help (always rightmost).
+
+        Items: ``(label, command)``, ``(label, command, accelerator)``,
+        or ``(\"---\", None)``.
+        """
         self._menus[title] = items
         parent = self._right if last else self._left
         btn = ctk.CTkButton(
