@@ -57,7 +57,7 @@ from src.core.workspace import (
 from src.ui.about_dialog import open_about
 from src.ui import dialogs
 from src.ui.markers_dialog import open_markers_dialog
-from src.ui.menubar import ThemedMenuBar
+from src.ui.menubar import NativeMenuBar
 from src.ui.settings_dialog import open_settings as show_settings_dialog
 from src.ui.timeline_lanes import LaneTrack, TimelineLanes
 from src.ui.tooltip import tip
@@ -185,9 +185,8 @@ class DonatelloApp(ctk.CTk, TkinterDnD.DnDWrapper):
     # ── menu ────────────────────────────────────────────────────────────
 
     def _build_menu(self) -> None:
-        # Native tk.Menu ignores dark theme on Windows — use themed bar instead.
-        self._menubar = ThemedMenuBar(self)
-        self._menubar.grid(row=0, column=0, columnspan=2, sticky="ew")
+        # Native tk.Menu: system colors on Windows, but correct hover/open/dismiss.
+        self._menubar = NativeMenuBar(self)
 
         self._menubar.add_menu(
             "File",
@@ -302,12 +301,11 @@ class DonatelloApp(ctk.CTk, TkinterDnD.DnDWrapper):
     def _build_layout(self) -> None:
         self.grid_columnconfigure(0, weight=0, minsize=260)
         self.grid_columnconfigure(1, weight=1)
-        self.grid_rowconfigure(0, weight=0)
-        self.grid_rowconfigure(1, weight=1)
-        self.grid_rowconfigure(2, weight=0)
+        self.grid_rowconfigure(0, weight=1)
+        self.grid_rowconfigure(1, weight=0)
 
         project = ctk.CTkFrame(self, corner_radius=0, fg_color=("gray90", "gray18"), width=260)
-        project.grid(row=1, column=0, sticky="nsew")
+        project.grid(row=0, column=0, sticky="nsew")
         project.grid_propagate(False)
         project.grid_columnconfigure(0, weight=1)
         project.grid_rowconfigure(2, weight=1)
@@ -331,7 +329,7 @@ class DonatelloApp(ctk.CTk, TkinterDnD.DnDWrapper):
         self._project_list.grid_columnconfigure(0, weight=1)
 
         tracks_frame = ctk.CTkFrame(self, corner_radius=0)
-        tracks_frame.grid(row=1, column=1, sticky="nsew")
+        tracks_frame.grid(row=0, column=1, sticky="nsew")
         tracks_frame.grid_columnconfigure(0, weight=1)
         tracks_frame.grid_rowconfigure(0, weight=1)
 
@@ -436,7 +434,7 @@ class DonatelloApp(ctk.CTk, TkinterDnD.DnDWrapper):
         self._refresh_skip_button_labels()
 
         timeline = ctk.CTkFrame(self, fg_color=("gray80", "gray14"), corner_radius=0, height=360)
-        timeline.grid(row=2, column=0, columnspan=2, sticky="ew")
+        timeline.grid(row=1, column=0, columnspan=2, sticky="ew")
         timeline.grid_columnconfigure(0, weight=1)
         timeline.grid_rowconfigure(1, weight=1)
         timeline.grid_propagate(False)

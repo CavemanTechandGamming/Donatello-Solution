@@ -34,7 +34,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Export multiple…** — File menu; folder of MKVs from split markers; Mark In/Out as outer bounds first; discard-before-first warn (Settings → Folders, default on); chapters inside each range remapped to 0
 - **Warn on unsaved workspace** — Save / Don't save / Cancel when closing or opening another workspace; title shows `•` when dirty (playhead scrub alone does not dirty)
 - **Autosave** — separate recovery slot under app data (never overwrites manual Save); interval when dirty (Settings → Folders, default 60s, 0 = off); File → Restore Autosave…; offer restore after an unclean quit
-- Themed top menu bar (File / Edit / Help); themed About dialog; themed info / warning / error / string-prompt / yes-no dialogs
+- **Tools menu** — Mark In / Out; named chapter droppers **Prelog / Intro / Episode / Credits / Epilog** at the playhead; accelerators `1`–`5`, `[`, `]`
+- Native system menu bar (File / Edit / Tools / Help); themed About dialog; themed info / warning / error / string-prompt / yes-no dialogs
 - Dark hover tooltips on controls; quieter chrome; active clip / workspace name in window title
 
 ### Changed
@@ -42,6 +43,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - README reshaped to the vault README template (current alpha features)
 - **Mark In / Out** documented as the export work area (and Delete range) — not “delete marks” by themselves
 - Former **Cut** control renamed to **Delete** (with confirm); split-without-delete is **Razor**
+- Menu bar uses native `tk.Menu` instead of a custom themed bar (system colors; click to activate, then hover switches — normal Windows behavior)
 
 ### Fixed
 
@@ -51,6 +53,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Separate Streams list panel (Select / Edit / volume live on timeline lanes)
 - Timeline **Cut** button label (replaced by Razor + Delete)
+- Custom dark-themed `ThemedMenuBar` (replaced by `NativeMenuBar`)
 
 ## [0.0.1] — 2026-09-15
 
