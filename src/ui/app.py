@@ -6,7 +6,7 @@ import json
 import os
 from dataclasses import dataclass
 from pathlib import Path
-from tkinter import filedialog
+from tkinter import BooleanVar, filedialog
 
 import customtkinter as ctk
 from tkinterdnd2 import DND_FILES, TkinterDnD
@@ -161,6 +161,11 @@ class DonatelloApp(ctk.CTk, TkinterDnD.DnDWrapper):
         self._workspace_path: Path | None = None
         self._saved_fingerprint: str = ""
         self._autosave_job: str | None = None
+        self._hide_timeline_buttons_var = BooleanVar(
+            value=app_settings.get_hide_timeline_buttons()
+        )
+        self._cut_row = None
+        self._ins_row = None
 
         self._preview_image: ctk.CTkImage | None = None
         self._last_pil: Image.Image | None = None
@@ -175,7 +180,10 @@ class DonatelloApp(ctk.CTk, TkinterDnD.DnDWrapper):
         )
 
         self.protocol("WM_DELETE_WINDOW", self._on_close)
+        self._bound_key_sequences: list[str] = []
         self._build_menu()
+        self._bind_fixed_shortcuts()
+        self._apply_user_keybindings()
         self._build_layout()
         self._wire_drag_and_drop()
         self._show_empty_state()
@@ -186,8 +194,23 @@ class DonatelloApp(ctk.CTk, TkinterDnD.DnDWrapper):
 
     # ── menu ────────────────────────────────────────────────────────────
 
+    def _accel(self, action_id: str) -> str | None:
+        from src.core.keybindings import chord_to_label, get_binding
+
+        chord = get_binding(action_id)
+        if not chord:
+            return None
+        label = chord_to_label(chord)
+        return None if label == "(none)" else label
+
     def _build_menu(self) -> None:
         # Native tk.Menu: system colors on Windows, but correct hover/open/dismiss.
+        import tkinter as tk
+
+        try:
+            self.configure(menu=tk.Menu(self))
+        except Exception:
+            pass
         self._menubar = NativeMenuBar(self)
 
         self._menubar.add_menu(
@@ -214,23 +237,103 @@ class DonatelloApp(ctk.CTk, TkinterDnD.DnDWrapper):
                 ("---", None),
                 ("Settings", self.open_settings, "Ctrl+,"),
                 ("---", None),
-                ("Clear marks", self._clear_marks),
-                ("Add marker", self._add_marker_here),
-                ("Add split", self._add_split_here),
-                ("Markers", self._manage_markers),
+                ("Clear marks", self._clear_marks, self._accel("clear_marks")),
+                ("Add marker", self._add_marker_here, self._accel("add_marker")),
+                ("Add split", self._add_split_here, self._accel("add_split")),
+                ("Markers", self._manage_markers, self._accel("markers")),
             ],
         )
         self._menubar.add_menu(
             "Tools",
             [
-                ("Mark In", self._mark_in_here, "["),
-                ("Mark Out", self._mark_out_here, "]"),
+                ("Mark In", self._mark_in_here, self._accel("mark_in")),
+                ("Mark Out", self._mark_out_here, self._accel("mark_out")),
+                ("Clear marks", self._clear_marks, self._accel("clear_marks")),
                 ("---", None),
-                ("Prelog", lambda: self._drop_named_chapter("Prelog"), "1"),
-                ("Intro", lambda: self._drop_named_chapter("Intro"), "2"),
-                ("Episode", lambda: self._drop_named_chapter("Episode"), "3"),
-                ("Credits", lambda: self._drop_named_chapter("Credits"), "4"),
-                ("Epilog", lambda: self._drop_named_chapter("Epilog"), "5"),
+                ("Add marker", self._add_marker_here, self._accel("add_marker")),
+                ("Add split", self._add_split_here, self._accel("add_split")),
+                ("Markers", self._manage_markers, self._accel("markers")),
+                (
+                    "Previous marker",
+                    lambda: self._goto_marker(-1),
+                    self._accel("prev_marker"),
+                ),
+                (
+                    "Next marker",
+                    lambda: self._goto_marker(1),
+                    self._accel("next_marker"),
+                ),
+                ("---", None),
+                ("Razor", self._do_razor, self._accel("razor")),
+                ("Delete", lambda: self._do_delete(False), self._accel("delete")),
+                (
+                    "Delete selected",
+                    lambda: self._do_delete(True),
+                    self._accel("delete_selected"),
+                ),
+                ("Insert", lambda: self._do_insert(False), self._accel("insert")),
+                (
+                    "Insert selected",
+                    lambda: self._do_insert(True),
+                    self._accel("insert_selected"),
+                ),
+                ("---", None),
+                ("Play / Pause", self._toggle_play, self._accel("play_pause")),
+                ("Stop", self._stop_preview, self._accel("stop")),
+                (
+                    "Previous frame",
+                    lambda: self._step_frames(-1),
+                    self._accel("prev_frame"),
+                ),
+                (
+                    "Next frame",
+                    lambda: self._step_frames(1),
+                    self._accel("next_frame"),
+                ),
+                (
+                    "Skip back",
+                    lambda: self._step_seconds(-1),
+                    self._accel("skip_back"),
+                ),
+                (
+                    "Skip forward",
+                    lambda: self._step_seconds(1),
+                    self._accel("skip_forward"),
+                ),
+                ("---", None),
+                (
+                    "Prelog",
+                    lambda: self._drop_named_chapter("Prelog"),
+                    self._accel("drop_prelog"),
+                ),
+                (
+                    "Intro",
+                    lambda: self._drop_named_chapter("Intro"),
+                    self._accel("drop_intro"),
+                ),
+                (
+                    "Episode",
+                    lambda: self._drop_named_chapter("Episode"),
+                    self._accel("drop_episode"),
+                ),
+                (
+                    "Credits",
+                    lambda: self._drop_named_chapter("Credits"),
+                    self._accel("drop_credits"),
+                ),
+                (
+                    "Epilog",
+                    lambda: self._drop_named_chapter("Epilog"),
+                    self._accel("drop_epilog"),
+                ),
+                ("---", None),
+                (
+                    "Hide timeline buttons",
+                    self._on_hide_timeline_buttons_toggle,
+                    None,
+                    "check",
+                    self._hide_timeline_buttons_var,
+                ),
             ],
         )
         self._menubar.add_menu(
@@ -243,6 +346,8 @@ class DonatelloApp(ctk.CTk, TkinterDnD.DnDWrapper):
             last=True,
         )
 
+    def _bind_fixed_shortcuts(self) -> None:
+        """File / Edit chords that are not user-customizable."""
         self.bind_all("<Control-i>", lambda _e: self.import_mkv_dialog())
         self.bind_all("<Control-o>", lambda _e: self.open_mkv_on_timeline())
         self.bind_all("<Control-Shift-O>", lambda _e: self.open_workspace_dialog())
@@ -253,17 +358,71 @@ class DonatelloApp(ctk.CTk, TkinterDnD.DnDWrapper):
         self.bind_all("<Control-y>", lambda _e: self._redo_edit())
         self.bind_all("<Control-Shift-Z>", lambda _e: self._redo_edit())
 
-        droppers = ("Prelog", "Intro", "Episode", "Credits", "Epilog")
-        for digit, name in enumerate(droppers, start=1):
-            handler = self._hotkey(lambda n=name: self._drop_named_chapter(n))
-            self.bind_all(f"<Key-{digit}>", handler)
-            self.bind_all(f"<KP_{digit}>", handler)
-        self.bind_all("<bracketleft>", self._hotkey(self._mark_in_here))
-        self.bind_all("<bracketright>", self._hotkey(self._mark_out_here))
-        self.bind_all("<Left>", self._hotkey(lambda: self._step_frames(-1)))
-        self.bind_all("<Right>", self._hotkey(lambda: self._step_frames(1)))
-        self.bind_all("<Up>", self._hotkey(lambda: self._step_seconds(1)))
-        self.bind_all("<Down>", self._hotkey(lambda: self._step_seconds(-1)))
+    def _user_action_callbacks(self) -> dict:
+        return {
+            "mark_in": self._mark_in_here,
+            "mark_out": self._mark_out_here,
+            "clear_marks": self._clear_marks,
+            "add_marker": self._add_marker_here,
+            "add_split": self._add_split_here,
+            "markers": self._manage_markers,
+            "prev_marker": lambda: self._goto_marker(-1),
+            "next_marker": lambda: self._goto_marker(1),
+            "razor": self._do_razor,
+            "delete": lambda: self._do_delete(False),
+            "delete_selected": lambda: self._do_delete(True),
+            "insert": lambda: self._do_insert(False),
+            "insert_selected": lambda: self._do_insert(True),
+            "play_pause": self._toggle_play,
+            "stop": self._stop_preview,
+            "prev_frame": lambda: self._step_frames(-1),
+            "next_frame": lambda: self._step_frames(1),
+            "skip_back": lambda: self._step_seconds(-1),
+            "skip_forward": lambda: self._step_seconds(1),
+            "drop_prelog": lambda: self._drop_named_chapter("Prelog"),
+            "drop_intro": lambda: self._drop_named_chapter("Intro"),
+            "drop_episode": lambda: self._drop_named_chapter("Episode"),
+            "drop_credits": lambda: self._drop_named_chapter("Credits"),
+            "drop_epilog": lambda: self._drop_named_chapter("Epilog"),
+        }
+
+    def _apply_user_keybindings(self) -> None:
+        from src.core.keybindings import (
+            chord_modifier_flags,
+            chord_to_sequence,
+            get_effective_bindings,
+        )
+
+        for seq in self._bound_key_sequences:
+            try:
+                self.unbind_all(seq)
+            except Exception:
+                pass
+        self._bound_key_sequences = []
+
+        callbacks = self._user_action_callbacks()
+        for action_id, chord in get_effective_bindings().items():
+            if not chord:
+                continue
+            callback = callbacks.get(action_id)
+            if callback is None:
+                continue
+            flags = chord_modifier_flags(chord)
+            handler = self._hotkey(callback, **flags)
+            sequences = [chord_to_sequence(chord)]
+            # Numpad digits mirror Key-1…Key-5
+            if chord.startswith("Key-") and len(chord) == 5 and chord[-1].isdigit():
+                sequences.append(f"<KP_{chord[-1]}>")
+            for seq in sequences:
+                if not seq:
+                    continue
+                self.bind_all(seq, handler)
+                self._bound_key_sequences.append(seq)
+
+    def reload_keybindings(self) -> None:
+        """Re-apply user shortcuts and refresh menu accelerator labels."""
+        self._apply_user_keybindings()
+        self._build_menu()
 
     def _focus_is_typing(self) -> bool:
         """True when a text field has focus — bare hotkeys must not fire."""
@@ -282,9 +441,28 @@ class DonatelloApp(ctk.CTk, TkinterDnD.DnDWrapper):
             return False
         return cls in ("Entry", "Text", "TEntry", "TCombobox", "Spinbox")
 
-    def _hotkey(self, callback):
-        def handler(_event=None):
+    def _hotkey(
+        self,
+        callback,
+        *,
+        require_shift: bool = False,
+        forbid_shift: bool = False,
+        require_control: bool = False,
+        forbid_control: bool = False,
+    ):
+        def handler(event=None):
             if self._focus_is_typing():
+                return None
+            state = int(getattr(event, "state", 0) or 0) if event is not None else 0
+            shift = bool(state & 0x0001)
+            control = bool(state & 0x0004)
+            if require_shift and not shift:
+                return None
+            if forbid_shift and shift:
+                return None
+            if require_control and not control:
+                return None
+            if forbid_control and control:
                 return None
             callback()
             return "break"
@@ -464,6 +642,7 @@ class DonatelloApp(ctk.CTk, TkinterDnD.DnDWrapper):
 
         cut_row = ctk.CTkFrame(timeline, fg_color="transparent")
         cut_row.grid(row=2, column=0, sticky="ew", padx=16, pady=(0, 4))
+        self._cut_row = cut_row
 
         btn_in = ctk.CTkButton(cut_row, text="Mark In", width=78, command=self._mark_in_here)
         btn_in.pack(side="left", padx=(0, 4))
@@ -550,6 +729,7 @@ class DonatelloApp(ctk.CTk, TkinterDnD.DnDWrapper):
 
         ins_row = ctk.CTkFrame(timeline, fg_color="transparent")
         ins_row.grid(row=3, column=0, sticky="ew", padx=16, pady=(0, 14))
+        self._ins_row = ins_row
 
         btn_ins = ctk.CTkButton(
             ins_row, text="Insert", width=86, command=lambda: self._do_insert(False)
@@ -580,6 +760,23 @@ class DonatelloApp(ctk.CTk, TkinterDnD.DnDWrapper):
         self._marks_label.pack(side="left", padx=(12, 0))
 
         self._drop_targets = (project, self._project_list, tracks_frame, timeline)
+        self._apply_timeline_chrome_visibility()
+
+    def _on_hide_timeline_buttons_toggle(self) -> None:
+        hidden = bool(self._hide_timeline_buttons_var.get())
+        app_settings.set_hide_timeline_buttons(hidden)
+        self._apply_timeline_chrome_visibility()
+
+    def _apply_timeline_chrome_visibility(self) -> None:
+        """Show or hide Mark/Edit button rows under the lanes."""
+        hidden = bool(self._hide_timeline_buttons_var.get())
+        for row in (self._cut_row, self._ins_row):
+            if row is None:
+                continue
+            if hidden:
+                row.grid_remove()
+            else:
+                row.grid()
 
     # ── drag & drop ─────────────────────────────────────────────────────
 
@@ -830,6 +1027,9 @@ class DonatelloApp(ctk.CTk, TkinterDnD.DnDWrapper):
             self._player.pause()
             self._play_btn.configure(text="Play")
         show_settings_dialog(self)
+        self._hide_timeline_buttons_var.set(app_settings.get_hide_timeline_buttons())
+        self._apply_timeline_chrome_visibility()
+        self.reload_keybindings()
         self._refresh_skip_button_labels()
         self._reschedule_autosave()
 

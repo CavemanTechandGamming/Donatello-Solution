@@ -6,21 +6,31 @@ from collections.abc import Callable
 
 import tkinter as tk
 
-# (label, command) or (label, command, accelerator) or ("---", None)
+# (label, command) or (label, command, accelerator)
+# or (label, command, accelerator, "check", BooleanVar)
+# or ("---", None)
 MenuItem = tuple
 
 
 def _parse_item(
     item: MenuItem,
-) -> tuple[str, Callable[[], None] | None, str | None]:
+) -> tuple[str, Callable[[], None] | None, str | None, str | None, tk.Variable | None]:
     if not item:
-        return "---", None, None
+        return "---", None, None, None, None
     label = item[0]
     if label == "---":
-        return "---", None, None
+        return "---", None, None, None, None
     command = item[1] if len(item) > 1 else None
     accel = item[2] if len(item) > 2 else None
-    return str(label), command, (str(accel) if accel else None)
+    kind = item[3] if len(item) > 3 else None
+    var = item[4] if len(item) > 4 else None
+    return (
+        str(label),
+        command,
+        (str(accel) if accel else None),
+        (str(kind) if kind else None),
+        var,
+    )
 
 
 class NativeMenuBar:
@@ -44,12 +54,13 @@ class NativeMenuBar:
         """Add a top-level cascade. ``last`` is accepted for API compat (unused).
 
         Items: ``(label, command)``, ``(label, command, accelerator)``,
+        ``(label, command, accelerator, \"check\", BooleanVar)``,
         or ``(\"---\", None)``.
         """
         del last  # native menus are left-to-right; Help should be added last
         cascade = tk.Menu(self._bar, tearoff=0)
         for raw in items:
-            label, command, accel = _parse_item(raw)
+            label, command, accel, kind, var = _parse_item(raw)
             if label == "---":
                 cascade.add_separator()
                 continue
@@ -58,5 +69,11 @@ class NativeMenuBar:
                 kwargs["command"] = command
             if accel:
                 kwargs["accelerator"] = accel
-            cascade.add_command(**kwargs)
+            if kind == "check" and var is not None:
+                kwargs["variable"] = var
+                kwargs["onvalue"] = True
+                kwargs["offvalue"] = False
+                cascade.add_checkbutton(**kwargs)
+            else:
+                cascade.add_command(**kwargs)
         self._bar.add_cascade(label=title, menu=cascade)

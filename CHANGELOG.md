@@ -12,7 +12,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Timeline shell: File → Open MKV, duration + track list (video / audio layout / softsubs)
 - FFmpeg bootstrap (`static-ffmpeg`) + `ffprobe` MKV probe (`src/core/`)
 - Project panel (left): Import + drag-and-drop MKVs (`tkinterdnd2`); click item to load on timeline
-- Settings: tabbed **Folders / Preview / Audio / Help** — default workspace/export folders; preview skip seconds; Audio = output device (System default or pinned) + sample rate + downmix Stereo / Mono / **Keep channels** (monitor only)
+- Settings: tabbed **Folders / Preview / Keyboard / Audio / Help** — default workspace/export folders; preview skip seconds; customizable timeline shortcuts; Audio = output device (System default or pinned) + sample rate + downmix Stereo / Mono / **Keep channels** (monitor only)
 - Track edit (Muxer-style): title + language on video / audio / subtitle; Default / Forced on subs; written on Export remux
 - In-app preview: Play / Pause / Stop + scrub (PyAV; HEVC 10-bit + AC3); aspect-fit; ±1 frame; ±skip seconds; decode off UI thread
 - Preview monitor audio: resample to float @ Settings sample rate; soft clip; Keep channels uses source layout when the device allows (else stereo fallback); Export never downmixes
@@ -34,7 +34,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Export multiple…** — File menu; folder of MKVs from split markers; Mark In/Out as outer bounds first; discard-before-first warn (Settings → Folders, default on); chapters inside each range remapped to 0
 - **Warn on unsaved workspace** — Save / Don't save / Cancel when closing or opening another workspace; title shows `•` when dirty (playhead scrub alone does not dirty)
 - **Autosave** — separate recovery slot under app data (never overwrites manual Save); interval when dirty (Settings → Folders, default 60s, 0 = off); File → Restore Autosave…; offer restore after an unclean quit
-- **Tools menu** — Mark In / Out; named chapter droppers **Prelog / Intro / Episode / Credits / Epilog** at the playhead; accelerators `1`–`5`, `[`, `]`
+- **Tools menu** — full mirror of timeline marks / edit / transport + chapter droppers; **Hide timeline buttons** (Tools check + Settings → Preview); customizable shortcuts
+- **Keyboard** — Settings → Keyboard: change / clear / reset per action or reset all; empty = unbound; File menu chords stay fixed
 - **Progress UI + cancel** — themed dialog during Export, Export multiple, Delete selected, and Insert selected; Cancel aborts FFmpeg and cleans partial outputs (workspace unchanged); stage-based bar (work steps, not FFmpeg timestamps)
 - Preview arrow keys — ← / → ±1 frame; ↑ / ↓ ±skip seconds (Settings); ignored while typing
 - Native system menu bar (File / Edit / Tools / Help); themed About dialog; themed info / warning / error / string-prompt / yes-no dialogs

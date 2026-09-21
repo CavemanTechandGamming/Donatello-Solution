@@ -1,4 +1,4 @@
-"""Settings dialog — tabbed Folders / Preview / Audio / Help."""
+"""Settings dialog — tabbed Folders / Preview / Keyboard / Audio / Help."""
 
 from __future__ import annotations
 
@@ -8,8 +8,18 @@ from tkinter import filedialog
 import customtkinter as ctk
 
 from src.core import settings as app_settings
+from src.core.keybindings import (
+    ACTIONS,
+    chord_to_label,
+    clear_binding,
+    get_binding,
+    reset_all_bindings,
+    reset_binding,
+    set_binding,
+)
 from src.core.logging_setup import get_logger, log_path, open_log_file
 from src.ui import dialogs
+from src.ui.keybinding_capture import capture_key
 
 logger = get_logger("settings_ui")
 
@@ -20,8 +30,8 @@ class SettingsDialog(ctk.CTkToplevel):
     def __init__(self, master) -> None:
         super().__init__(master)
         self.title("Settings — Donatello Solution")
-        self.geometry("640x480")
-        self.minsize(560, 420)
+        self.geometry("700x560")
+        self.minsize(620, 480)
         self.resizable(True, True)
 
         self.transient(master)
@@ -36,11 +46,13 @@ class SettingsDialog(ctk.CTkToplevel):
 
         tab_folders = tabs.add("Folders")
         tab_preview = tabs.add("Preview")
+        tab_keyboard = tabs.add("Keyboard")
         tab_audio = tabs.add("Audio")
         tab_help = tabs.add("Help")
 
         self._build_folders_tab(tab_folders)
         self._build_preview_tab(tab_preview)
+        self._build_keyboard_tab(tab_keyboard)
         self._build_audio_tab(tab_audio)
         self._build_help_tab(tab_help)
 
@@ -135,10 +147,126 @@ class SettingsDialog(ctk.CTkToplevel):
         )
         ctk.CTkLabel(
             tab,
-            text="seconds (<< / >> buttons)",
+            text="seconds (<< / >> buttons · ↑ / ↓)",
             text_color=("gray40", "gray60"),
             anchor="w",
         ).grid(row=1, column=2, sticky="w", padx=(4, 8))
+
+        self._hide_timeline_var = ctk.BooleanVar(
+            value=app_settings.get_hide_timeline_buttons()
+        )
+        ctk.CTkCheckBox(
+            tab,
+            text="Hide timeline button rows (use Tools menu + shortcuts)",
+            variable=self._hide_timeline_var,
+        ).grid(row=2, column=0, columnspan=3, sticky="w", padx=8, pady=(12, 8))
+
+    def _build_keyboard_tab(self, tab) -> None:
+        tab.grid_columnconfigure(0, weight=1)
+        tab.grid_rowconfigure(1, weight=1)
+
+        ctk.CTkLabel(
+            tab,
+            text="Timeline and Tools shortcuts. File menu keys (Ctrl+S, etc.) stay fixed.",
+            anchor="w",
+            text_color=("gray40", "gray65"),
+        ).grid(row=0, column=0, sticky="ew", padx=8, pady=(8, 8))
+
+        self._kb_list = ctk.CTkScrollableFrame(tab, fg_color="transparent")
+        self._kb_list.grid(row=1, column=0, sticky="nsew", padx=4, pady=4)
+        self._kb_list.grid_columnconfigure(0, weight=1)
+        self._kb_chord_labels: dict[str, ctk.CTkLabel] = {}
+
+        header = ctk.CTkFrame(self._kb_list, fg_color="transparent")
+        header.grid(row=0, column=0, sticky="ew", padx=4, pady=(0, 4))
+        header.grid_columnconfigure(0, weight=1)
+        ctk.CTkLabel(header, text="Action", anchor="w", width=160).grid(
+            row=0, column=0, sticky="w"
+        )
+        ctk.CTkLabel(header, text="Shortcut", anchor="w", width=120).grid(
+            row=0, column=1, sticky="w", padx=8
+        )
+
+        for i, action in enumerate(ACTIONS, start=1):
+            row = ctk.CTkFrame(self._kb_list, fg_color="transparent")
+            row.grid(row=i, column=0, sticky="ew", padx=4, pady=2)
+            row.grid_columnconfigure(0, weight=1)
+            ctk.CTkLabel(row, text=action.label, anchor="w").grid(
+                row=0, column=0, sticky="w"
+            )
+            chord_lbl = ctk.CTkLabel(
+                row,
+                text=chord_to_label(get_binding(action.id)),
+                anchor="w",
+                width=120,
+                text_color=("gray30", "gray70"),
+            )
+            chord_lbl.grid(row=0, column=1, sticky="w", padx=8)
+            self._kb_chord_labels[action.id] = chord_lbl
+            btns = ctk.CTkFrame(row, fg_color="transparent")
+            btns.grid(row=0, column=2, sticky="e")
+            ctk.CTkButton(
+                btns,
+                text="Change",
+                width=70,
+                command=lambda a=action: self._kb_change(a.id, a.label),
+            ).pack(side="left", padx=2)
+            ctk.CTkButton(
+                btns,
+                text="Clear",
+                width=60,
+                fg_color=("gray70", "gray35"),
+                hover_color=("gray60", "gray45"),
+                command=lambda aid=action.id: self._kb_clear(aid),
+            ).pack(side="left", padx=2)
+            ctk.CTkButton(
+                btns,
+                text="Default",
+                width=70,
+                fg_color=("gray70", "gray35"),
+                hover_color=("gray60", "gray45"),
+                command=lambda aid=action.id: self._kb_reset_one(aid),
+            ).pack(side="left", padx=2)
+
+        foot = ctk.CTkFrame(tab, fg_color="transparent")
+        foot.grid(row=2, column=0, sticky="ew", padx=8, pady=(8, 8))
+        ctk.CTkButton(
+            foot,
+            text="Reset all to defaults",
+            width=160,
+            command=self._kb_reset_all,
+        ).pack(side="left")
+
+    def _kb_refresh_labels(self) -> None:
+        for action_id, label in self._kb_chord_labels.items():
+            label.configure(text=chord_to_label(get_binding(action_id)))
+
+    def _kb_change(self, action_id: str, action_label: str) -> None:
+        chord = capture_key(self, action_label=action_label, action_id=action_id)
+        if chord is None:
+            return
+        set_binding(action_id, chord)
+        self._kb_refresh_labels()
+
+    def _kb_clear(self, action_id: str) -> None:
+        clear_binding(action_id)
+        self._kb_refresh_labels()
+
+    def _kb_reset_one(self, action_id: str) -> None:
+        reset_binding(action_id)
+        self._kb_refresh_labels()
+
+    def _kb_reset_all(self) -> None:
+        ok = dialogs.ask_yes_no(
+            "Reset shortcuts?",
+            "Restore every timeline / Tools shortcut to its default?",
+            parent=self,
+            ok_text="Reset",
+        )
+        if not ok:
+            return
+        reset_all_bindings()
+        self._kb_refresh_labels()
 
     def _build_audio_tab(self, tab) -> None:
         tab.grid_columnconfigure(1, weight=1)
@@ -266,14 +394,16 @@ class SettingsDialog(ctk.CTkToplevel):
         app_settings.set_warn_export_multiple_discard_before_first(
             bool(self._warn_multi_var.get())
         )
+        app_settings.set_hide_timeline_buttons(bool(self._hide_timeline_var.get()))
         logger.info(
-            "Settings saved: device=%s rate=%s downmix=%s skip=%s warn_multi=%s autosave=%s",
+            "Settings saved: device=%s rate=%s downmix=%s skip=%s warn_multi=%s autosave=%s hide_timeline=%s",
             chosen or app_settings.DEFAULT_AUDIO_LABEL,
             self._rate_var.get(),
             self._downmix_var.get(),
             raw,
             self._warn_multi_var.get(),
             self._autosave_var.get(),
+            self._hide_timeline_var.get(),
         )
         self.grab_release()
         self.destroy()

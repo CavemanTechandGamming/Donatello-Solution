@@ -175,6 +175,64 @@ def set_autosave_interval_seconds(seconds: int | str) -> int:
     return value
 
 
+def get_hide_timeline_buttons() -> bool:
+    """When True, hide the timeline Mark/Edit button rows (Tools + shortcuts remain)."""
+    raw = load_settings().get("hide_timeline_buttons", False)
+    if isinstance(raw, bool):
+        return raw
+    if isinstance(raw, (int, float)):
+        return bool(raw)
+    text = str(raw or "").strip().lower()
+    return text in ("1", "true", "yes", "on")
+
+
+def set_hide_timeline_buttons(hidden: bool) -> bool:
+    settings = load_settings()
+    settings["hide_timeline_buttons"] = bool(hidden)
+    save_settings(settings)
+    return bool(hidden)
+
+
+def get_keybinding_overrides() -> dict[str, str]:
+    """Raw overrides from settings (may include empty strings = unbound)."""
+    raw = load_settings().get("keybindings")
+    if not isinstance(raw, dict):
+        return {}
+    out: dict[str, str] = {}
+    for key, value in raw.items():
+        if value is None:
+            continue
+        out[str(key)] = str(value)
+    return out
+
+
+def set_keybinding_override(action_id: str, chord: str) -> None:
+    settings = load_settings()
+    bindings = settings.get("keybindings")
+    if not isinstance(bindings, dict):
+        bindings = {}
+    bindings[str(action_id)] = str(chord)
+    settings["keybindings"] = bindings
+    save_settings(settings)
+
+
+def clear_keybinding_override(action_id: str) -> None:
+    settings = load_settings()
+    bindings = settings.get("keybindings")
+    if not isinstance(bindings, dict):
+        return
+    if str(action_id) in bindings:
+        del bindings[str(action_id)]
+        settings["keybindings"] = bindings
+        save_settings(settings)
+
+
+def clear_all_keybinding_overrides() -> None:
+    settings = load_settings()
+    settings.pop("keybindings", None)
+    save_settings(settings)
+
+
 def import_dialog_initialdir() -> str | None:
     path = get_last_import_dir() or get_default_workspace_dir()
     return str(path) if path else None
